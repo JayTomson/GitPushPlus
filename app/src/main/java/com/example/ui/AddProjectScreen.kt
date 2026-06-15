@@ -1,19 +1,32 @@
 package com.example.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.network.GithubRepo
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,19 +47,24 @@ fun AddProjectScreen(
     var newRepoName by remember { mutableStateOf("") }
     var isPrivate by remember { mutableStateOf(true) }
 
-    LaunchedEffect(Unit) {
-        viewModel.fetchRepos()
+    var selectedRepo by remember { mutableStateOf<GithubRepo?>(null) }
+
+    LaunchedEffect(username) {
+        if (username != null) {
+            viewModel.fetchRepos()
+        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Add Project") },
+                title = { Text("Add Project Container", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         }
     ) { innerPadding ->
@@ -54,108 +72,322 @@ fun AddProjectScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            if (errorMsg != null) {
-                Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
+            // Error Alert Dialog banner
+            AnimatedVisibility(visible = errorMsg != null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.width(8.dp))
-                        Text(errorMsg ?: "", color = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { viewModel.clearError() }) { Text("Dismiss") }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = errorMsg ?: "",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { viewModel.clearError() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }
 
-            OutlinedTextField(
-                value = projectName,
-                onValueChange = { projectName = it },
-                label = { Text("Project Name (App Display)") },
-                modifier = Modifier.fillMaxWidth().testTag("add_project_name_input"),
-                singleLine = true
-            )
-
-            OutlinedTextField(
-                value = branchName,
-                onValueChange = { branchName = it },
-                label = { Text("Branch") },
-                modifier = Modifier.fillMaxWidth().testTag("add_branch_input"),
-                singleLine = true
-            )
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Mode: ", style = MaterialTheme.typography.titleMedium)
-                Spacer(modifier = Modifier.width(8.dp))
-                Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = !isCreatingNew,
-                        onClick = { isCreatingNew = false },
-                        label = { Text("Existing") }
-                    )
-                    FilterChip(
-                        selected = isCreatingNew,
-                        onClick = { isCreatingNew = true },
-                        label = { Text("Create New") }
-                    )
-                }
-            }
-
-            if (isCreatingNew) {
-                OutlinedTextField(
-                    value = newRepoName,
-                    onValueChange = { newRepoName = it },
-                    label = { Text("New Repository Name") },
-                    modifier = Modifier.fillMaxWidth().testTag("new_repo_input"),
-                    singleLine = true
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it })
-                    Text("Private Repository")
-                }
-                Button(
-                    onClick = {
-                        viewModel.createAndAddProject(projectName, newRepoName, isPrivate, branchName)
-                        onNavigateBack()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = projectName.isNotBlank() && newRepoName.isNotBlank() && username != null
+            if (username.isNullOrBlank()) {
+                // Connection Guidance Box
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(vertical = 32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Text("Create & Add Project")
+                    Icon(
+                        imageVector = Icons.Default.CloudOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "Not Connected to GitHub",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Connecting your personal GitHub account is required before we can fetch your repositories or create projects on your behalf.",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(
+                        onClick = { onNavigateBack() }, // Return or let settings handle it
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Configure GitHub Settings Now")
+                    }
                 }
             } else {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    label = { Text("Search My Repositories") },
+                // Form Fields
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // App display project name
+                    OutlinedTextField(
+                        value = projectName,
+                        onValueChange = { projectName = it },
+                        label = { Text("Display Name of Project") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("add_project_name_input"),
+                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                        placeholder = { Text("My Awesome Project") },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
+                    )
 
-                if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
-                } else {
-                    val filteredRepos = remoteRepos.filter { it.fullName.contains(searchQuery, ignoreCase = true) }
-                    LazyColumn(modifier = Modifier.weight(1f)) {
-                        items(filteredRepos) { repo ->
-                            ListItem(
-                                headlineContent = { Text(repo.name) },
-                                supportingContent = { Text(if (repo.isPrivate) "Private" else "Public") },
+                    // Selection Mode
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("Add Mode", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        FilterChip(
+                            selected = !isCreatingNew,
+                            onClick = { isCreatingNew = false },
+                            label = { Text("Existing Repository") }
+                        )
+                        FilterChip(
+                            selected = isCreatingNew,
+                            onClick = { isCreatingNew = true },
+                            label = { Text("Create New Repository") }
+                        )
+                    }
+                }
+
+                if (isCreatingNew) {
+                    // Form fields for creating a brand new GitHub repo
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = newRepoName,
+                            onValueChange = { newRepoName = it },
+                            label = { Text("New GitHub Repo Name") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("new_repo_input"),
+                            leadingIcon = { Icon(Icons.Default.BorderColor, contentDescription = null) },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
+                        )
+
+                        // Privacy settings
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        viewModel.addProject(
-                                            appProjectName = projectName.ifEmpty { repo.name },
-                                            repoOwner = repo.fullName.split("/")[0],
-                                            repoName = repo.name,
-                                            branch = branchName
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = if (isPrivate) Icons.Default.Lock else Icons.Default.Share,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text("Private Repository", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            if (isPrivate) "Only you and collaborators" else "Anyone can view this repo",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
-                                        onNavigateBack()
                                     }
-                            )
-                            HorizontalDivider()
+                                }
+                                Switch(checked = isPrivate, onCheckedChange = { isPrivate = it })
+                            }
                         }
+
+                        // Bottom Branch input (by default main)
+                        OutlinedTextField(
+                            value = branchName,
+                            onValueChange = { branchName = it },
+                            label = { Text("Default Branch") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("add_branch_input"),
+                            leadingIcon = { Icon(Icons.Default.CallSplit, contentDescription = null) },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
+                        )
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        Button(
+                            onClick = {
+                                viewModel.createAndAddProject(
+                                    appProjectName = projectName.ifBlank { newRepoName },
+                                    repoName = newRepoName,
+                                    isPrivate = isPrivate,
+                                    defaultBranch = branchName.ifBlank { "main" }
+                                )
+                                onNavigateBack()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp),
+                            enabled = projectName.isNotBlank() && newRepoName.isNotBlank(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Create & Sync Repository")
+                        }
+                    }
+                } else {
+                    // Search bar on top
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        label = { Text("Search GitHub Repositories") },
+                        modifier = Modifier.fillMaxWidth(),
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
+                    )
+
+                    if (isLoading) {
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        val filteredRepos = remoteRepos.filter {
+                            it.name.contains(searchQuery, ignoreCase = true) ||
+                            it.fullName.contains(searchQuery, ignoreCase = true)
+                        }
+
+                        if (filteredRepos.isEmpty()) {
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                Text(
+                                    "No repositories found.\nPull again or connect your account.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            LazyColumn(modifier = Modifier.weight(1f)) {
+                                items(filteredRepos) { repo ->
+                                    val isRepoSelected = selectedRepo?.id == repo.id
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp)
+                                            .clickable {
+                                                selectedRepo = repo
+                                                if (projectName.isBlank()) {
+                                                    projectName = repo.name
+                                                }
+                                            },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isRepoSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+                                            else Color.Transparent
+                                        ),
+                                        border = BorderStroke(
+                                            width = 1.dp,
+                                            color = if (isRepoSelected) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.outlineVariant
+                                        )
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = if (repo.isPrivate) Icons.Default.Lock else Icons.Default.Share,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                            )
+                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(repo.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                                Text(repo.fullName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                            if (isRepoSelected) {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = "Selected",
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Branch name input (default is main) placed below the scroll list as requested
+                    OutlinedTextField(
+                        value = branchName,
+                        onValueChange = { branchName = it },
+                        label = { Text("Checkout Branch") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("add_branch_input"),
+                        leadingIcon = { Icon(Icons.Default.CallSplit, contentDescription = null) },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
+                    )
+
+                    Button(
+                        onClick = {
+                            val repo = selectedRepo
+                            if (repo != null) {
+                                viewModel.addProject(
+                                    appProjectName = projectName.ifBlank { repo.name },
+                                    repoOwner = repo.fullName.split("/")[0],
+                                    repoName = repo.name,
+                                    branch = branchName.ifBlank { repo.defaultBranch ?: "main" }
+                                )
+                                onNavigateBack()
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .padding(bottom = 8.dp),
+                        enabled = projectName.isNotBlank() && selectedRepo != null,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Add Project to Home Workspace")
                     }
                 }
             }

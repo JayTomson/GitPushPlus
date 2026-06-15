@@ -76,6 +76,7 @@ fun GitPushPlusApp(viewModel: AppViewModel) {
             }
             ProjectDetailScreen(
                 project = project,
+                viewModel = viewModel,
                 onNavigateBack = { navController.navigateUp() }
             )
         }

@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "GitPushPlus",
+  "description": "An adaptive visual client for managing GitHub repositories, branches, commits, and branch merges directly from your device.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
