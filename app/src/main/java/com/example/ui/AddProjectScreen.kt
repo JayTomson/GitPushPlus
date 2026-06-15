@@ -50,6 +50,36 @@ fun AddProjectScreen(
     var selectedRepo by remember { mutableStateOf<GithubRepo?>(null) }
     var localFolderName by remember { mutableStateOf("") }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val folderPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val takeFlags: Int = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            localFolderName = uri.toString()
+        }
+    }
+
+    val displayFolderName = remember(localFolderName) {
+        if (localFolderName.startsWith("content://")) {
+            try {
+                val parsedUri = android.net.Uri.parse(localFolderName)
+                val docFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, parsedUri)
+                docFile?.name ?: "System Folder"
+            } catch (e: Exception) {
+                "System Folder"
+            }
+        } else {
+            localFolderName.ifBlank { "Not selected" }
+        }
+    }
+
     LaunchedEffect(username) {
         if (username != null) {
             viewModel.fetchRepos()
@@ -158,19 +188,68 @@ fun AddProjectScreen(
                         colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
                     )
 
-                    OutlinedTextField(
-                        value = localFolderName,
-                        onValueChange = { localFolderName = it },
-                        label = { Text("Local Workspace Folder") },
+                    Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("add_local_folder_input"),
-                        leadingIcon = { Icon(Icons.Default.SnippetFolder, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
-                        placeholder = { Text("Workspace/my-project") },
-                        supportingText = { Text("The folder in App private storage where local files are stored.") },
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
-                    )
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    Icon(
+                                        imageVector = Icons.Default.FolderOpen,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            "On-Device Folder Workspace",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = displayFolderName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (localFolderName.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                                Button(
+                                    onClick = { folderPickerLauncher.launch(null) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.testTag("select_device_folder_btn")
+                                ) {
+                                    Text(if (localFolderName.isBlank()) "Select" else "Change")
+                                }
+                            }
+                            if (localFolderName.startsWith("content://")) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "Connected via Storage Access Framework. Persistent permission is active.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF2E7D32)
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "Tap 'Select' to authorize any folder on your device to scan and modify standard project files.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
 
                     // Selection Mode
                     Row(

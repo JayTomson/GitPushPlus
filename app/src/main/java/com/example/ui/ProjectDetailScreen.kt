@@ -484,15 +484,22 @@ fun ProjectDetailScreen(
                             } else {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     localFiles.forEach { file ->
-                                        val parentDir = java.io.File(context.filesDir, project.localFolderPath)
-                                        val relPath = file.relativeTo(parentDir).path.replace("\\", "/")
+                                        val relPath = file.relativePath
                                         
                                         Card(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clickable {
                                                     selectedEditingFileRelativePath = relPath
-                                                    selectedEditingFileContent = try { file.readText(Charsets.UTF_8) } catch(e: Exception) { "" }
+                                                    selectedEditingFileContent = if (file.uriString != null) {
+                                                        try {
+                                                            context.contentResolver.openInputStream(android.net.Uri.parse(file.uriString))?.use { stream ->
+                                                                stream.bufferedReader(Charsets.UTF_8).readText()
+                                                            } ?: ""
+                                                        } catch(e: Exception) { "" }
+                                                    } else {
+                                                        try { file.file?.readText(Charsets.UTF_8) ?: "" } catch(e: Exception) { "" }
+                                                    }
                                                     showEditFileDialog = true
                                                 },
                                             shape = RoundedCornerShape(8.dp),
@@ -517,7 +524,7 @@ fun ProjectDetailScreen(
                                                 }
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                                     Text(
-                                                        "${file.length()} B",
+                                                        "${file.size} B",
                                                         style = MaterialTheme.typography.labelSmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )

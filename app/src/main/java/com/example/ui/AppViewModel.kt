@@ -8,6 +8,8 @@ import com.example.data.GitProject
 import com.example.data.ProjectDao
 import com.example.data.SettingsRepository
 import com.example.network.*
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +42,7 @@ class AppViewModel(
     val isLoadingCommits = MutableStateFlow(false)
 
     // Workspace & Change Management
-    val localFiles = MutableStateFlow<List<java.io.File>>(emptyList())
+    val localFiles = MutableStateFlow<List<WorkspaceFile>>(emptyList())
     val remoteGitTree = MutableStateFlow<List<com.example.network.GitTreeEntry>>(emptyList())
     val modifiedFiles = MutableStateFlow<List<LocalModifiedFile>>(emptyList())
     val isLoadingWorkspace = MutableStateFlow(false)
@@ -326,37 +328,160 @@ class AppViewModel(
 
     fun scanLocalWorkspace(context: android.content.Context) {
         val project = selectedProject.value ?: return
-        val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
-        if (!workspaceDir.exists()) {
-            workspaceDir.mkdirs()
+        val path = project.localFolderPath
+        val collectedFiles = mutableListOf<WorkspaceFile>()
+
+        if (path.startsWith("content://")) {
+            // SAF DocumentTree Mode
+            try {
+                val parsedUri = Uri.parse(path)
+                val rootDir = DocumentFile.fromTreeUri(context, parsedUri)
+                if (rootDir != null && rootDir.exists()) {
+                    walkDocumentTree(context, rootDir, rootDir, "", collectedFiles)
+                }
+            } catch (e: Exception) {
+                errorMsg.value = "Failed to scan authorized system directory: " + e.localizedMessage
+            }
+        } else {
+            // Legacy / FilesDir Mode
+            val workspaceDir = java.io.File(context.filesDir, path)
+            if (!workspaceDir.exists()) {
+                workspaceDir.mkdirs()
+            }
+            val files = workspaceDir.walkTopDown()
+                .filter { it.isFile && !it.absolutePath.contains("/.") && !it.name.startsWith(".") }
+                .toList()
+
+            for (file in files) {
+                val relativePath = file.relativeTo(workspaceDir).path.replace("\\", "/")
+                collectedFiles.add(
+                    WorkspaceFile(
+                        name = file.name,
+                        relativePath = relativePath,
+                        size = file.length(),
+                        file = file
+                    )
+                )
+            }
         }
 
-        // Walk file tree
-        val files = workspaceDir.walkTopDown()
-            .filter { it.isFile && !it.absolutePath.contains("/.") && !it.name.startsWith(".") }
-            .toList()
-
-        localFiles.value = files
+        localFiles.value = collectedFiles
 
         // Compute modified files
         val tree = remoteGitTree.value
         val modifiedList = mutableListOf<LocalModifiedFile>()
 
-        for (file in files) {
-            val relativePath = file.relativeTo(workspaceDir).path.replace("\\", "/")
-            val content = try { file.readText(Charsets.UTF_8) } catch (e: Exception) { "" }
+        for (file in collectedFiles) {
+            val content = if (file.uriString != null) {
+                readDocContent(context, Uri.parse(file.uriString))
+            } else {
+                try { file.file?.readText(Charsets.UTF_8) ?: "" } catch (e: Exception) { "" }
+            }
             val localSha = computeGitSha(content)
 
-            val remoteEntry = tree.firstOrNull { it.path == relativePath }
+            val remoteEntry = tree.firstOrNull { it.path == file.relativePath }
             if (remoteEntry == null) {
                 // Not on remote branch -> new file
-                modifiedList.add(LocalModifiedFile(relativePath, file, isNew = true))
+                modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = true, uriString = file.uriString))
             } else if (remoteEntry.sha != localSha) {
                 // Different SHA -> modified file
-                modifiedList.add(LocalModifiedFile(relativePath, file, isNew = false, remoteSha = remoteEntry.sha))
+                modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = remoteEntry.sha, uriString = file.uriString))
             }
         }
         modifiedFiles.value = modifiedList
+    }
+
+    private fun walkDocumentTree(
+        context: android.content.Context,
+        root: DocumentFile,
+        currentDir: DocumentFile,
+        parentPath: String,
+        accumulatedFiles: MutableList<WorkspaceFile>
+    ) {
+        val childFiles = currentDir.listFiles()
+        for (child in childFiles) {
+            val name = child.name ?: continue
+            // Skip hidden stuff and major build/node items
+            if (name.startsWith(".") || name == "node_modules" || name == "build") continue
+            
+            val relPath = if (parentPath.isEmpty()) name else "$parentPath/$name"
+            if (child.isDirectory) {
+                walkDocumentTree(context, root, child, relPath, accumulatedFiles)
+            } else if (child.isFile) {
+                accumulatedFiles.add(
+                    WorkspaceFile(
+                        name = name,
+                        relativePath = relPath,
+                        size = child.length(),
+                        uriString = child.uri.toString()
+                    )
+                )
+            }
+        }
+    }
+
+    private fun readDocContent(context: android.content.Context, uri: Uri): String {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                stream.bufferedReader(Charsets.UTF_8).readText()
+            } ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    private fun writeDocContent(context: android.content.Context, uri: Uri, text: String) {
+        try {
+            context.contentResolver.openOutputStream(uri, "rwt")?.use { stream ->
+                stream.bufferedWriter(Charsets.UTF_8).write(text)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun getOrCreateDocumentFile(
+        context: android.content.Context,
+        treeUriStr: String,
+        relativePath: String
+    ): DocumentFile? {
+        val rootUri = Uri.parse(treeUriStr)
+        var current: DocumentFile = DocumentFile.fromTreeUri(context, rootUri) ?: return null
+        val parts = relativePath.split("/").filter { it.isNotBlank() && it != "." && it != ".." }
+        if (parts.isEmpty()) return null
+        
+        // Traverse to build subfolders
+        for (i in 0 until parts.size - 1) {
+            val part = parts[i]
+            var nextDir = current.findFile(part)
+            if (nextDir == null || !nextDir.isDirectory) {
+                nextDir = current.createDirectory(part)
+            }
+            if (nextDir == null) return null
+            current = nextDir
+        }
+        
+        val fileName = parts.last()
+        var targetFile = current.findFile(fileName)
+        if (targetFile == null || !targetFile.isFile) {
+            val mimeType = getMimeTypeForName(fileName)
+            targetFile = current.createFile(mimeType, fileName)
+        }
+        return targetFile
+    }
+
+    private fun getMimeTypeForName(name: String): String {
+        return when {
+            name.endsWith(".txt", true) -> "text/plain"
+            name.endsWith(".html", true) -> "text/html"
+            name.endsWith(".css", true) -> "text/css"
+            name.endsWith(".js", true) -> "application/javascript"
+            name.endsWith(".json", true) -> "application/json"
+            name.endsWith(".xml", true) -> "text/xml"
+            name.endsWith(".kt", true) -> "text/plain"
+            name.endsWith(".md", true) -> "text/markdown"
+            else -> "application/octet-stream"
+        }
     }
 
     private fun computeGitSha(content: String): String {
@@ -396,13 +521,7 @@ class AppViewModel(
                     val treeEntries = response.body()?.tree ?: emptyList()
                     remoteGitTree.value = treeEntries
 
-                    // 2. Clear out local directory, or download/overwrite files from the remote tree
-                    val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
-                    if (!workspaceDir.exists()) {
-                        workspaceDir.mkdirs()
-                    }
-
-                    // For each remote file entry of type "blob", download and save it locally
+                    // 2. Overwrite / Download files
                     for (entry in treeEntries.filter { it.type == "blob" }) {
                         val fileResponse = githubApi.getFileContent("Bearer $currentToken", project.repoOwner, project.repoName, entry.path, branch)
                         if (fileResponse.isSuccessful) {
@@ -410,9 +529,18 @@ class AppViewModel(
                             val decodedBytes = Base64.decode(base64Content, Base64.DEFAULT)
                             val decodedString = String(decodedBytes, Charsets.UTF_8)
                             
-                            val localFile = java.io.File(workspaceDir, entry.path)
-                            localFile.parentFile?.mkdirs()
-                            localFile.writeText(decodedString, Charsets.UTF_8)
+                            val path = project.localFolderPath
+                            if (path.startsWith("content://")) {
+                                val docFile = getOrCreateDocumentFile(context, path, entry.path)
+                                if (docFile != null) {
+                                    writeDocContent(context, docFile.uri, decodedString)
+                                }
+                            } else {
+                                val workspaceDir = java.io.File(context.filesDir, path)
+                                val localFile = java.io.File(workspaceDir, entry.path)
+                                localFile.parentFile?.mkdirs()
+                                localFile.writeText(decodedString, Charsets.UTF_8)
+                            }
                         }
                     }
 
@@ -431,12 +559,23 @@ class AppViewModel(
 
     fun saveWorkspaceFile(context: android.content.Context, relativePath: String, content: String) {
         val project = selectedProject.value ?: return
-        val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
-        val targetFile = java.io.File(workspaceDir, relativePath)
+        val path = project.localFolderPath
         try {
-            targetFile.parentFile?.mkdirs()
-            targetFile.writeText(content, Charsets.UTF_8)
-            scanLocalWorkspace(context)
+            if (path.startsWith("content://")) {
+                val docFile = getOrCreateDocumentFile(context, path, relativePath)
+                if (docFile != null) {
+                    writeDocContent(context, docFile.uri, content)
+                    scanLocalWorkspace(context)
+                } else {
+                    errorMsg.value = "Could not create or authorize destination file paths inside tree."
+                }
+            } else {
+                val workspaceDir = java.io.File(context.filesDir, path)
+                val targetFile = java.io.File(workspaceDir, relativePath)
+                targetFile.parentFile?.mkdirs()
+                targetFile.writeText(content, Charsets.UTF_8)
+                scanLocalWorkspace(context)
+            }
         } catch (e: Exception) {
             errorMsg.value = "Failed to save file: " + e.localizedMessage
         }
@@ -444,13 +583,26 @@ class AppViewModel(
 
     fun deleteWorkspaceFile(context: android.content.Context, relativePath: String) {
         val project = selectedProject.value ?: return
-        val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
-        val targetFile = java.io.File(workspaceDir, relativePath)
+        val path = project.localFolderPath
         try {
-            if (targetFile.exists()) {
-                targetFile.delete()
+            if (path.startsWith("content://")) {
+                val rootUri = Uri.parse(path)
+                val rootDir = DocumentFile.fromTreeUri(context, rootUri)
+                val parts = relativePath.split("/").filter { it.isNotBlank() }
+                var current = rootDir
+                for (part in parts) {
+                    current = current?.findFile(part)
+                }
+                current?.delete()
+                scanLocalWorkspace(context)
+            } else {
+                val workspaceDir = java.io.File(context.filesDir, path)
+                val targetFile = java.io.File(workspaceDir, relativePath)
+                if (targetFile.exists()) {
+                    targetFile.delete()
+                }
+                scanLocalWorkspace(context)
             }
-            scanLocalWorkspace(context)
         } catch (e: Exception) {
             errorMsg.value = "Failed to delete file: " + e.localizedMessage
         }
@@ -471,16 +623,23 @@ class AppViewModel(
                 var pushedCount = 0
                 for (modFile in filesToPush) {
                     val relativePath = modFile.relativePath
-                    val localFile = modFile.localFile
-                    if (!localFile.exists()) continue
+                    
+                    val content = if (modFile.uriString != null) {
+                        readDocContent(context, Uri.parse(modFile.uriString))
+                    } else {
+                        val lf = modFile.localFile
+                        if (lf != null && lf.exists()) {
+                            lf.readText(Charsets.UTF_8)
+                        } else {
+                            continue
+                        }
+                    }
 
-                    val content = localFile.readText(Charsets.UTF_8)
                     val base64Content = Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 
                     // 1. Get SHA of file if it exists remote (to update it)
                     var currentSha = modFile.remoteSha
                     if (currentSha == null) {
-                        // Double check if file exists
                         val fileInfoResponse = githubApi.getFileContent(
                             "Bearer $currentToken",
                             project.repoOwner,
@@ -510,10 +669,9 @@ class AppViewModel(
                 }
 
                 gitActionSuccessMsg.value = "Pushed $pushedCount modified file(s) cleanly to '$branch'!"
-                // Reload commits list
                 fetchCommits(project.repoOwner, project.repoName, branch)
                 
-                // Re-sync Git tree metadata from remote to update local SHA baselines
+                // Re-sync Git tree metadata to update SHA baselines
                 val branchesInfo = githubApi.getBranches("Bearer $currentToken", project.repoOwner, project.repoName)
                 val activeBranchCommitInfo = branchesInfo.firstOrNull { it.name == branch }
                 val targetSha = activeBranchCommitInfo?.commit?.sha
@@ -524,7 +682,6 @@ class AppViewModel(
                     }
                 }
                 
-                // Rescan so modified count resets to 0!
                 scanLocalWorkspace(context)
             } catch (e: Exception) {
                 errorMsg.value = e.localizedMessage ?: "Failed to push files"
@@ -535,9 +692,18 @@ class AppViewModel(
     }
 }
 
+data class WorkspaceFile(
+    val name: String,
+    val relativePath: String,
+    val size: Long,
+    val uriString: String? = null,
+    val file: java.io.File? = null
+)
+
 data class LocalModifiedFile(
     val relativePath: String,
-    val localFile: java.io.File,
+    val localFile: java.io.File? = null,
     val isNew: Boolean,
-    val remoteSha: String? = null
+    val remoteSha: String? = null,
+    val uriString: String? = null
 )
