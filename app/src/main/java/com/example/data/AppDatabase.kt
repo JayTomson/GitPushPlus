@@ -17,6 +17,7 @@ data class GitProject(
     val repoOwner: String,
     val repoName: String,
     val defaultBranch: String = "main",
+    val localFolderPath: String = "",
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -32,7 +33,7 @@ interface ProjectDao {
     suspend fun deleteProjectById(id: Int)
 }
 
-@Database(entities = [GitProject::class], version = 1, exportSchema = false)
+@Database(entities = [GitProject::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao
 }

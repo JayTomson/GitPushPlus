@@ -48,6 +48,7 @@ fun AddProjectScreen(
     var isPrivate by remember { mutableStateOf(true) }
 
     var selectedRepo by remember { mutableStateOf<GithubRepo?>(null) }
+    var localFolderName by remember { mutableStateOf("") }
 
     LaunchedEffect(username) {
         if (username != null) {
@@ -157,6 +158,20 @@ fun AddProjectScreen(
                         colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
                     )
 
+                    OutlinedTextField(
+                        value = localFolderName,
+                        onValueChange = { localFolderName = it },
+                        label = { Text("Local Workspace Folder") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("add_local_folder_input"),
+                        leadingIcon = { Icon(Icons.Default.SnippetFolder, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) },
+                        placeholder = { Text("Workspace/my-project") },
+                        supportingText = { Text("The folder in App private storage where local files are stored.") },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
+                    )
+
                     // Selection Mode
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -188,7 +203,15 @@ fun AddProjectScreen(
                     ) {
                         OutlinedTextField(
                             value = newRepoName,
-                            onValueChange = { newRepoName = it },
+                            onValueChange = { 
+                                newRepoName = it
+                                if (projectName.isBlank() || projectName == it.dropLast(1)) {
+                                    projectName = it
+                                }
+                                if (localFolderName.isBlank() || localFolderName == "Workspace/${it.dropLast(1)}") {
+                                    localFolderName = "Workspace/$it"
+                                }
+                            },
                             label = { Text("New GitHub Repo Name") },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -251,7 +274,8 @@ fun AddProjectScreen(
                                     appProjectName = projectName.ifBlank { newRepoName },
                                     repoName = newRepoName,
                                     isPrivate = isPrivate,
-                                    defaultBranch = branchName.ifBlank { "main" }
+                                    defaultBranch = branchName.ifBlank { "main" },
+                                    localFolderPath = localFolderName.ifBlank { "Workspace/$newRepoName" }
                                 )
                                 onNavigateBack()
                             },
@@ -307,8 +331,11 @@ fun AddProjectScreen(
                                             .padding(vertical = 4.dp)
                                             .clickable {
                                                 selectedRepo = repo
-                                                if (projectName.isBlank()) {
+                                                if (projectName.isBlank() || projectName == selectedRepo?.name) {
                                                     projectName = repo.name
+                                                }
+                                                if (localFolderName.isBlank() || localFolderName == "Workspace/${selectedRepo?.name}") {
+                                                    localFolderName = "Workspace/${repo.name}"
                                                 }
                                             },
                                         shape = RoundedCornerShape(12.dp),
@@ -373,7 +400,8 @@ fun AddProjectScreen(
                                     appProjectName = projectName.ifBlank { repo.name },
                                     repoOwner = repo.fullName.split("/")[0],
                                     repoName = repo.name,
-                                    branch = branchName.ifBlank { repo.defaultBranch ?: "main" }
+                                    branch = branchName.ifBlank { repo.defaultBranch ?: "main" },
+                                    localFolderPath = localFolderName.ifBlank { "Workspace/${repo.name}" }
                                 )
                                 onNavigateBack()
                             }

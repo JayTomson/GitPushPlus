@@ -15,3 +15,7 @@
 .cxx
 local.properties
 .env
+
+# Allow tracking of debug APK artifacts
+!**/build/outputs/apk/debug/
+!**/*-debug.apk

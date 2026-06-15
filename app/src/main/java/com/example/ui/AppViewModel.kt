@@ -39,6 +39,12 @@ class AppViewModel(
     val isLoadingBranches = MutableStateFlow(false)
     val isLoadingCommits = MutableStateFlow(false)
 
+    // Workspace & Change Management
+    val localFiles = MutableStateFlow<List<java.io.File>>(emptyList())
+    val remoteGitTree = MutableStateFlow<List<com.example.network.GitTreeEntry>>(emptyList())
+    val modifiedFiles = MutableStateFlow<List<LocalModifiedFile>>(emptyList())
+    val isLoadingWorkspace = MutableStateFlow(false)
+
     fun saveCredentials(user: String, tok: String) {
         viewModelScope.launch {
             settingsRepository.saveCredentials(user, tok)
@@ -75,14 +81,16 @@ class AppViewModel(
         }
     }
 
-    fun addProject(appProjectName: String, repoOwner: String, repoName: String, branch: String) {
+    fun addProject(appProjectName: String, repoOwner: String, repoName: String, branch: String, localFolderPath: String = "") {
         viewModelScope.launch {
+            val pathValue = localFolderPath.ifBlank { "Workspace/$repoName" }
             projectDao.insertProject(
                 GitProject(
                     name = appProjectName,
                     repoOwner = repoOwner,
                     repoName = repoName,
-                    defaultBranch = branch
+                    defaultBranch = branch,
+                    localFolderPath = pathValue
                 )
             )
         }
@@ -97,7 +105,7 @@ class AppViewModel(
         }
     }
 
-    fun createAndAddProject(appProjectName: String, repoName: String, isPrivate: Boolean, defaultBranch: String) {
+    fun createAndAddProject(appProjectName: String, repoName: String, isPrivate: Boolean, defaultBranch: String, localFolderPath: String = "") {
         viewModelScope.launch {
             val currentToken = token.value
             val currentUser = username.value
@@ -113,7 +121,7 @@ class AppViewModel(
                     CreateRepoRequest(name = repoName, isPrivate = isPrivate, autoInit = true)
                 )
                 // Add the project locally with the specified branch
-                addProject(appProjectName, currentUser, newRepo.name, defaultBranch)
+                addProject(appProjectName, currentUser, newRepo.name, defaultBranch, localFolderPath)
                 gitActionSuccessMsg.value = "Repository '$repoName' created successfully!"
                 fetchRepos()
             } catch (e: Exception) {
@@ -315,4 +323,221 @@ class AppViewModel(
             return AppViewModel(projectDao, settingsRepository, githubApi) as T
         }
     }
+
+    fun scanLocalWorkspace(context: android.content.Context) {
+        val project = selectedProject.value ?: return
+        val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
+        if (!workspaceDir.exists()) {
+            workspaceDir.mkdirs()
+        }
+
+        // Walk file tree
+        val files = workspaceDir.walkTopDown()
+            .filter { it.isFile && !it.absolutePath.contains("/.") && !it.name.startsWith(".") }
+            .toList()
+
+        localFiles.value = files
+
+        // Compute modified files
+        val tree = remoteGitTree.value
+        val modifiedList = mutableListOf<LocalModifiedFile>()
+
+        for (file in files) {
+            val relativePath = file.relativeTo(workspaceDir).path.replace("\\", "/")
+            val content = try { file.readText(Charsets.UTF_8) } catch (e: Exception) { "" }
+            val localSha = computeGitSha(content)
+
+            val remoteEntry = tree.firstOrNull { it.path == relativePath }
+            if (remoteEntry == null) {
+                // Not on remote branch -> new file
+                modifiedList.add(LocalModifiedFile(relativePath, file, isNew = true))
+            } else if (remoteEntry.sha != localSha) {
+                // Different SHA -> modified file
+                modifiedList.add(LocalModifiedFile(relativePath, file, isNew = false, remoteSha = remoteEntry.sha))
+            }
+        }
+        modifiedFiles.value = modifiedList
+    }
+
+    private fun computeGitSha(content: String): String {
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        val gitHeader = "blob ${bytes.size}\u0000"
+        val digest = java.security.MessageDigest.getInstance("SHA-1")
+        val headerBytes = gitHeader.toByteArray(Charsets.UTF_8)
+        digest.update(headerBytes)
+        digest.update(bytes)
+        val hashBytes = digest.digest()
+        return hashBytes.joinToString("") { "%02x".format(it) }
+    }
+
+    fun syncWorkspaceFromGitHub(context: android.content.Context) {
+        val project = selectedProject.value ?: return
+        val branch = selectedBranch.value
+        viewModelScope.launch {
+            val currentToken = token.value
+            if (currentToken.isNullOrBlank()) {
+                errorMsg.value = "Auth token missing. Connect your account."
+                return@launch
+            }
+            isLoadingWorkspace.value = true
+            errorMsg.value = null
+            try {
+                // 1. Fetch remote tree
+                val branchesInfo = githubApi.getBranches("Bearer $currentToken", project.repoOwner, project.repoName)
+                val activeBranchCommitInfo = branchesInfo.firstOrNull { it.name == branch }
+                val targetSha = activeBranchCommitInfo?.commit?.sha
+                if (targetSha.isNullOrBlank()) {
+                    errorMsg.value = "Cannot find SHA for branch '$branch'"
+                    return@launch
+                }
+
+                val response = githubApi.getGitTree("Bearer $currentToken", project.repoOwner, project.repoName, targetSha, recursive = 1)
+                if (response.isSuccessful) {
+                    val treeEntries = response.body()?.tree ?: emptyList()
+                    remoteGitTree.value = treeEntries
+
+                    // 2. Clear out local directory, or download/overwrite files from the remote tree
+                    val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
+                    if (!workspaceDir.exists()) {
+                        workspaceDir.mkdirs()
+                    }
+
+                    // For each remote file entry of type "blob", download and save it locally
+                    for (entry in treeEntries.filter { it.type == "blob" }) {
+                        val fileResponse = githubApi.getFileContent("Bearer $currentToken", project.repoOwner, project.repoName, entry.path, branch)
+                        if (fileResponse.isSuccessful) {
+                            val base64Content = fileResponse.body()?.content?.replace("\n", "")?.replace("\r", "")?.replace(" ", "") ?: ""
+                            val decodedBytes = Base64.decode(base64Content, Base64.DEFAULT)
+                            val decodedString = String(decodedBytes, Charsets.UTF_8)
+                            
+                            val localFile = java.io.File(workspaceDir, entry.path)
+                            localFile.parentFile?.mkdirs()
+                            localFile.writeText(decodedString, Charsets.UTF_8)
+                        }
+                    }
+
+                    gitActionSuccessMsg.value = "Workspace synchronized successfully from branch '$branch'!"
+                    scanLocalWorkspace(context)
+                } else {
+                    errorMsg.value = "Failed to sync remote tree: " + (response.errorBody()?.string() ?: "Unknown error")
+                }
+            } catch (e: Exception) {
+                errorMsg.value = e.localizedMessage ?: "Failed to sync workspace"
+            } finally {
+                isLoadingWorkspace.value = false
+            }
+        }
+    }
+
+    fun saveWorkspaceFile(context: android.content.Context, relativePath: String, content: String) {
+        val project = selectedProject.value ?: return
+        val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
+        val targetFile = java.io.File(workspaceDir, relativePath)
+        try {
+            targetFile.parentFile?.mkdirs()
+            targetFile.writeText(content, Charsets.UTF_8)
+            scanLocalWorkspace(context)
+        } catch (e: Exception) {
+            errorMsg.value = "Failed to save file: " + e.localizedMessage
+        }
+    }
+
+    fun deleteWorkspaceFile(context: android.content.Context, relativePath: String) {
+        val project = selectedProject.value ?: return
+        val workspaceDir = java.io.File(context.filesDir, project.localFolderPath)
+        val targetFile = java.io.File(workspaceDir, relativePath)
+        try {
+            if (targetFile.exists()) {
+                targetFile.delete()
+            }
+            scanLocalWorkspace(context)
+        } catch (e: Exception) {
+            errorMsg.value = "Failed to delete file: " + e.localizedMessage
+        }
+    }
+
+    fun pushModifiedFiles(context: android.content.Context, filesToPush: List<LocalModifiedFile>, commitMessage: String) {
+        val project = selectedProject.value ?: return
+        val branch = selectedBranch.value
+        viewModelScope.launch {
+            val currentToken = token.value
+            if (currentToken.isNullOrBlank()) {
+                errorMsg.value = "Auth token missing"
+                return@launch
+            }
+            isLoadingWorkspace.value = true
+            errorMsg.value = null
+            try {
+                var pushedCount = 0
+                for (modFile in filesToPush) {
+                    val relativePath = modFile.relativePath
+                    val localFile = modFile.localFile
+                    if (!localFile.exists()) continue
+
+                    val content = localFile.readText(Charsets.UTF_8)
+                    val base64Content = Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+
+                    // 1. Get SHA of file if it exists remote (to update it)
+                    var currentSha = modFile.remoteSha
+                    if (currentSha == null) {
+                        // Double check if file exists
+                        val fileInfoResponse = githubApi.getFileContent(
+                            "Bearer $currentToken",
+                            project.repoOwner,
+                            project.repoName,
+                            relativePath,
+                            branch
+                        )
+                        if (fileInfoResponse.isSuccessful) {
+                            currentSha = fileInfoResponse.body()?.sha
+                        }
+                    }
+
+                    // 2. Commit & upload to Git
+                    githubApi.createOrUpdateFile(
+                        "Bearer $currentToken",
+                        project.repoOwner,
+                        project.repoName,
+                        relativePath,
+                        CreateOrUpdateFileRequest(
+                            message = "$commitMessage (pushed: $relativePath)",
+                            content = base64Content,
+                            branch = branch,
+                            sha = currentSha
+                        )
+                    )
+                    pushedCount++
+                }
+
+                gitActionSuccessMsg.value = "Pushed $pushedCount modified file(s) cleanly to '$branch'!"
+                // Reload commits list
+                fetchCommits(project.repoOwner, project.repoName, branch)
+                
+                // Re-sync Git tree metadata from remote to update local SHA baselines
+                val branchesInfo = githubApi.getBranches("Bearer $currentToken", project.repoOwner, project.repoName)
+                val activeBranchCommitInfo = branchesInfo.firstOrNull { it.name == branch }
+                val targetSha = activeBranchCommitInfo?.commit?.sha
+                if (!targetSha.isNullOrBlank()) {
+                    val response = githubApi.getGitTree("Bearer $currentToken", project.repoOwner, project.repoName, targetSha, recursive = 1)
+                    if (response.isSuccessful) {
+                        remoteGitTree.value = response.body()?.tree ?: emptyList()
+                    }
+                }
+                
+                // Rescan so modified count resets to 0!
+                scanLocalWorkspace(context)
+            } catch (e: Exception) {
+                errorMsg.value = e.localizedMessage ?: "Failed to push files"
+            } finally {
+                isLoadingWorkspace.value = false
+            }
+        }
+    }
 }
+
+data class LocalModifiedFile(
+    val relativePath: String,
+    val localFile: java.io.File,
+    val isNew: Boolean,
+    val remoteSha: String? = null
+)

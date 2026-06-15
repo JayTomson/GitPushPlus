@@ -80,7 +80,9 @@ data class CreateBranchRefRequest(
 data class FileResponse(
     @Json(name = "sha") val sha: String?,
     @Json(name = "name") val name: String?,
-    @Json(name = "path") val path: String?
+    @Json(name = "path") val path: String?,
+    @Json(name = "content") val content: String? = null,
+    @Json(name = "encoding") val encoding: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -154,4 +156,30 @@ interface GithubApiService {
         @Path("path") path: String,
         @Body request: CreateOrUpdateFileRequest
     ): FileResponse
+
+    @GET("repos/{owner}/{repo}/git/trees/{tree_sha}")
+    suspend fun getGitTree(
+        @Header("Authorization") token: String,
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("tree_sha") treeSha: String,
+        @Query("recursive") recursive: Int = 1
+    ): Response<GitTreeResponse>
 }
+
+@JsonClass(generateAdapter = true)
+data class GitTreeResponse(
+    @Json(name = "sha") val sha: String,
+    @Json(name = "tree") val tree: List<GitTreeEntry>,
+    @Json(name = "truncated") val truncated: Boolean
+)
+
+@JsonClass(generateAdapter = true)
+data class GitTreeEntry(
+    @Json(name = "path") val path: String,
+    @Json(name = "mode") val mode: String,
+    @Json(name = "type") val type: String, // "blob" (file) or "tree" (dir)
+    @Json(name = "sha") val sha: String,
+    @Json(name = "size") val size: Long? = null,
+    @Json(name = "url") val url: String? = null
+)

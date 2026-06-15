@@ -26,6 +26,7 @@ import retrofit2.converter.moshi.MoshiConverterFactory
 class MainActivity : ComponentActivity() {
     private val db by lazy {
         Room.databaseBuilder(applicationContext, AppDatabase::class.java, "gitpushplus-db")
+            .fallbackToDestructiveMigration()
             .build()
     }
     

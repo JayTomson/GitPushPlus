@@ -48,10 +48,19 @@ fun ProjectDetailScreen(
     var activeTab by remember { mutableStateOf(0) }
     var currentBranch by remember { mutableStateOf(project.defaultBranch) }
 
-    // File Commit Tab States
-    var filePath by remember { mutableStateOf("") }
-    var fileContent by remember { mutableStateOf("") }
-    var commitMessage by remember { mutableStateOf("") }
+    // Workspace Management States
+    val localFiles by viewModel.localFiles.collectAsStateWithLifecycle()
+    val modifiedFiles by viewModel.modifiedFiles.collectAsStateWithLifecycle()
+    val isLoadingWorkspace by viewModel.isLoadingWorkspace.collectAsStateWithLifecycle()
+
+    var showCreateFileDialog by remember { mutableStateOf(false) }
+    var showEditFileDialog by remember { mutableStateOf(false) }
+    var relativePathInput by remember { mutableStateOf("") }
+    var fileTextContentInput by remember { mutableStateOf("") }
+    var workspaceCommitMsg by remember { mutableStateOf("Push local modifications") }
+
+    var selectedEditingFileRelativePath by remember { mutableStateOf("") }
+    var selectedEditingFileContent by remember { mutableStateOf("") }
 
     // Merge States
     var mergeBaseBranch by remember { mutableStateOf(project.defaultBranch) }
@@ -65,10 +74,12 @@ fun ProjectDetailScreen(
     var showCreateBranchDialog by remember { mutableStateOf(false) }
     var newBranchName by remember { mutableStateOf("") }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     // Sync on launch or when selection changes
     LaunchedEffect(project.id, currentBranch) {
         viewModel.fetchBranches(project.repoOwner, project.repoName)
         viewModel.fetchCommits(project.repoOwner, project.repoName, currentBranch)
+        viewModel.scanLocalWorkspace(context)
     }
 
     Scaffold(
@@ -246,8 +257,8 @@ fun ProjectDetailScreen(
                 Tab(
                     selected = activeTab == 1,
                     onClick = { activeTab = 1 },
-                    text = { Text("Commit File") },
-                    icon = { Icon(Icons.Default.Edit, contentDescription = null) }
+                    text = { Text("Local Workspace") },
+                    icon = { Icon(Icons.Default.SnippetFolder, contentDescription = null) }
                 )
                 Tab(
                     selected = activeTab == 2,
@@ -359,7 +370,7 @@ fun ProjectDetailScreen(
                         }
                     }
                     1 -> {
-                        // File commit terminal
+                        // Local Workspace Center Console
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -367,54 +378,271 @@ fun ProjectDetailScreen(
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             Text(
-                                "Commit and upload content to branch '$currentBranch' in the directory tree.",
+                                "Manage file changes on device, view modified lines, and push updates in batches.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
 
-                            OutlinedTextField(
-                                value = filePath,
-                                onValueChange = { filePath = it },
-                                label = { Text("Target File Path") },
-                                modifier = Modifier.fillMaxWidth(),
-                                leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null) },
-                                singleLine = true,
-                                colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
-                            )
-
-                            OutlinedTextField(
-                                value = fileContent,
-                                onValueChange = { fileContent = it },
-                                label = { Text("File Content") },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(180.dp),
-                                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
-                                colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
-                            )
-
-                            OutlinedTextField(
-                                value = commitMessage,
-                                onValueChange = { commitMessage = it },
-                                label = { Text("Commit Message") },
-                                modifier = Modifier.fillMaxWidth(),
-                                leadingIcon = { Icon(Icons.Default.Chat, contentDescription = null) },
-                                singleLine = true,
-                                colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
-                            )
-
-                            Button(
-                                onClick = {
-                                    viewModel.commitFile(filePath, fileContent, commitMessage)
-                                    fileContent = ""
-                                },
-                                enabled = filePath.isNotBlank() && commitMessage.isNotBlank(),
-                                modifier = Modifier.fillMaxWidth(),
+                            // Workspace directory info & Sync control
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
-                                Icon(Icons.Default.CloudUpload, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Upload & Commit to Branch")
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                "Local Directory Path",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                project.localFolderPath,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+                                        if (isLoadingWorkspace) {
+                                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                        } else {
+                                            IconButton(
+                                                onClick = { viewModel.syncWorkspaceFromGitHub(context) },
+                                                modifier = Modifier.testTag("workspace_sync_btn")
+                                            ) {
+                                                Icon(Icons.Default.Sync, contentDescription = "Sync from GitHub", tint = MaterialTheme.colorScheme.primary)
+                                            }
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Button(
+                                            onClick = { viewModel.syncWorkspaceFromGitHub(context) },
+                                            enabled = !isLoadingWorkspace,
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Sync/Clone Repo")
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                relativePathInput = ""
+                                                fileTextContentInput = ""
+                                                showCreateFileDialog = true
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.weight(1f).testTag("new_local_file_btn")
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("New File")
+                                        }
+                                    }
+                                }
+                            }
+
+                            // localFiles inventory tree
+                            Text(
+                                "On-Device Files (${localFiles.size})",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            if (localFiles.isEmpty()) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(24.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            "No local files stored yet.\nTap 'Sync/Clone Repo' to check out remote source files or create a new one.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            textAlign = TextAlign.Center,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    localFiles.forEach { file ->
+                                        val parentDir = java.io.File(context.filesDir, project.localFolderPath)
+                                        val relPath = file.relativeTo(parentDir).path.replace("\\", "/")
+                                        
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    selectedEditingFileRelativePath = relPath
+                                                    selectedEditingFileContent = try { file.readText(Charsets.UTF_8) } catch(e: Exception) { "" }
+                                                    showEditFileDialog = true
+                                                },
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                    Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(
+                                                        relPath,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        "${file.length()} B",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                    Spacer(modifier = Modifier.width(10.dp))
+                                                    IconButton(
+                                                        onClick = { viewModel.deleteWorkspaceFile(context, relPath) },
+                                                        modifier = Modifier.size(24.dp)
+                                                    ) {
+                                                        Icon(Icons.Default.Delete, contentDescription = "Delete Local File", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            // modifiedFiles status differences
+                            Text(
+                                "Modified / Untracked Changes (${modifiedFiles.size})",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            if (modifiedFiles.isEmpty()) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF2E7D32), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "Working tree clean. No differences identified.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    modifiedFiles.forEach { mod ->
+                                        Card(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                                            border = BorderStroke(
+                                                width = 1.dp,
+                                                color = if (mod.isNew) Color(0xFF00796B).copy(alpha = 0.4f) else Color(0xFFD84315).copy(alpha = 0.4f)
+                                            )
+                                        ) {
+                                            Column(modifier = Modifier.padding(12.dp)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                        Icon(
+                                                            Icons.Default.FiberNew,
+                                                            contentDescription = null,
+                                                            tint = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
+                                                            modifier = Modifier.size(20.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            mod.relativePath,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontFamily = FontFamily.Monospace,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                    Surface(
+                                                        color = if (mod.isNew) Color(0xFFE0F2F1) else Color(0xFFFBE9E7),
+                                                        shape = RoundedCornerShape(8.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (mod.isNew) "UNTRACKED / NEW" else "MODIFIED",
+                                                            color = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // Push console
+                                    OutlinedTextField(
+                                        value = workspaceCommitMsg,
+                                        onValueChange = { workspaceCommitMsg = it },
+                                        label = { Text("Commit Message") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        leadingIcon = { Icon(Icons.Default.Message, contentDescription = null) },
+                                        singleLine = true,
+                                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
+                                    )
+
+                                    Button(
+                                        onClick = {
+                                            viewModel.pushModifiedFiles(context, modifiedFiles, workspaceCommitMsg)
+                                        },
+                                        enabled = workspaceCommitMsg.isNotBlank() && !isLoadingWorkspace,
+                                        modifier = Modifier.fillMaxWidth().testTag("push_workspace_btn"),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Icon(Icons.Default.CloudUpload, contentDescription = null)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Push and Commit to Remote Branch")
+                                    }
+                                }
                             }
                         }
                     }
@@ -605,6 +833,86 @@ fun ProjectDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateBranchDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showCreateFileDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateFileDialog = false },
+            title = { Text("Create Local File") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Enter relative path and content to write this file inside the project workspace directory.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = relativePathInput,
+                        onValueChange = { relativePathInput = it },
+                        label = { Text("File Path (e.g. index.html, README.md)") },
+                        modifier = Modifier.fillMaxWidth().testTag("add_file_path_input"),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = fileTextContentInput,
+                        onValueChange = { fileTextContentInput = it },
+                        label = { Text("File Content") },
+                        modifier = Modifier.fillMaxWidth().height(160.dp).testTag("add_file_content_input"),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (relativePathInput.isNotBlank()) {
+                            viewModel.saveWorkspaceFile(context, relativePathInput, fileTextContentInput)
+                            showCreateFileDialog = false
+                        }
+                    },
+                    enabled = relativePathInput.isNotBlank()
+                ) {
+                    Text("Save File")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateFileDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showEditFileDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditFileDialog = false },
+            title = { Text("Edit File: $selectedEditingFileRelativePath") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = selectedEditingFileContent,
+                        onValueChange = { selectedEditingFileContent = it },
+                        label = { Text("File Content") },
+                        modifier = Modifier.fillMaxWidth().height(260.dp).testTag("edit_file_content_input"),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.saveWorkspaceFile(context, selectedEditingFileRelativePath, selectedEditingFileContent)
+                        showEditFileDialog = false
+                    }
+                ) {
+                    Text("Save Changes")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditFileDialog = false }) {
                     Text("Cancel")
                 }
             }

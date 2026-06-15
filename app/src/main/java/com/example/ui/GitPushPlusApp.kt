@@ -25,7 +25,8 @@ data class ProjectDetailRoute(
     val name: String,
     val repoOwner: String,
     val repoName: String,
-    val defaultBranch: String
+    val defaultBranch: String,
+    val localFolderPath: String
 )
 
 @Composable
@@ -45,7 +46,8 @@ fun GitPushPlusApp(viewModel: AppViewModel) {
                             name = project.name,
                             repoOwner = project.repoOwner,
                             repoName = project.repoName,
-                            defaultBranch = project.defaultBranch
+                            defaultBranch = project.defaultBranch,
+                            localFolderPath = project.localFolderPath
                         )
                     )
                 }
@@ -71,7 +73,8 @@ fun GitPushPlusApp(viewModel: AppViewModel) {
                     name = route.name,
                     repoOwner = route.repoOwner,
                     repoName = route.repoName,
-                    defaultBranch = route.defaultBranch
+                    defaultBranch = route.defaultBranch,
+                    localFolderPath = route.localFolderPath
                 )
             }
             ProjectDetailScreen(
