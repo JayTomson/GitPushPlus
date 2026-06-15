@@ -56,9 +56,10 @@ fun ProjectDetailScreen(
 
     var showCreateFileDialog by remember { mutableStateOf(false) }
     var showEditFileDialog by remember { mutableStateOf(false) }
+    var showCommitPushDialog by remember { mutableStateOf(false) }
     var relativePathInput by remember { mutableStateOf("") }
     var fileTextContentInput by remember { mutableStateOf("") }
-    var workspaceCommitMsg by remember { mutableStateOf("Push local modifications") }
+    var workspaceCommitMsg by remember { mutableStateOf("") }
 
     var selectedEditingFileRelativePath by remember { mutableStateOf("") }
     var selectedEditingFileContent by remember { mutableStateOf("") }
@@ -111,6 +112,14 @@ fun ProjectDetailScreen(
         viewModel.fetchBranches(project.repoOwner, project.repoName)
         viewModel.fetchCommits(project.repoOwner, project.repoName, currentBranch)
         viewModel.scanLocalWorkspace(context)
+
+        // Setup a real-time background tracker to instantly recognize edited/new files
+        while (true) {
+            kotlinx.coroutines.delay(2000)
+            if (project.localFolderPath.isNotBlank()) {
+                viewModel.scanLocalWorkspace(context)
+            }
+        }
     }
 
     Scaffold(
@@ -485,34 +494,33 @@ fun ProjectDetailScreen(
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         Button(
+                                            onClick = {
+                                                workspaceCommitMsg = ""
+                                                showCommitPushDialog = true
+                                            },
+                                            enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank() && modifiedFiles.isNotEmpty(),
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.weight(1.5f).testTag("commit_push_workspace_trigger_btn")
+                                        ) {
+                                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Commit")
+                                        }
+
+                                        OutlinedButton(
                                             onClick = { viewModel.syncWorkspaceFromGitHub(context) },
                                             enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank(),
-                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier.weight(1f)
                                         ) {
                                             if (isLoadingWorkspace) {
-                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onSecondary, strokeWidth = 2.dp)
+                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                             } else {
                                                 Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
                                             }
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Sync/Clone Repo")
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                relativePathInput = ""
-                                                fileTextContentInput = ""
-                                                showCreateFileDialog = true
-                                            },
-                                            enabled = project.localFolderPath.isNotBlank(),
-                                            shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.weight(1f).testTag("new_local_file_btn")
-                                        ) {
-                                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("New File")
+                                            Text("Pull/Sync")
                                         }
                                     }
                                 }
@@ -608,47 +616,10 @@ fun ProjectDetailScreen(
                                                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                                                             )
                                                         }
-                                                        IconButton(
-                                                            onClick = { viewModel.deleteWorkspaceFile(context, mod.relativePath) },
-                                                            modifier = Modifier.size(32.dp).padding(start = 4.dp)
-                                                        ) {
-                                                            Icon(
-                                                                imageVector = Icons.Default.Delete,
-                                                                contentDescription = "Delete File",
-                                                                tint = MaterialTheme.colorScheme.error,
-                                                                modifier = Modifier.size(16.dp)
-                                                            )
-                                                        }
                                                     }
                                                 }
                                             }
                                         }
-                                    }
-
-                                    Spacer(modifier = Modifier.height(10.dp))
-
-                                    // Push console
-                                    OutlinedTextField(
-                                        value = workspaceCommitMsg,
-                                        onValueChange = { workspaceCommitMsg = it },
-                                        label = { Text("Commit Message") },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        leadingIcon = { Icon(Icons.Default.Message, contentDescription = null) },
-                                        singleLine = true,
-                                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
-                                    )
-
-                                    Button(
-                                        onClick = {
-                                            viewModel.pushModifiedFiles(context, modifiedFiles, workspaceCommitMsg)
-                                        },
-                                        enabled = workspaceCommitMsg.isNotBlank() && !isLoadingWorkspace,
-                                        modifier = Modifier.fillMaxWidth().testTag("push_workspace_btn"),
-                                        shape = RoundedCornerShape(12.dp)
-                                    ) {
-                                        Icon(Icons.Default.CloudUpload, contentDescription = null)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Push and Commit to Remote Branch")
                                     }
                                 }
                             }
@@ -921,6 +892,47 @@ fun ProjectDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showEditFileDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showCommitPushDialog) {
+        AlertDialog(
+            onDismissRequest = { showCommitPushDialog = false },
+            title = { Text("Commit & Push Changes") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "You have ${modifiedFiles.size} modified/new files to commit and push.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = workspaceCommitMsg,
+                        onValueChange = { workspaceCommitMsg = it },
+                        label = { Text("Commit Message") },
+                        modifier = Modifier.fillMaxWidth().testTag("commit_push_message_input"),
+                        leadingIcon = { Icon(Icons.Default.Message, contentDescription = null) },
+                        singleLine = true,
+                        placeholder = { Text("e.g. Update styles and templates") }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val messageToUse = workspaceCommitMsg.ifBlank { "Update files" }
+                        viewModel.pushModifiedFiles(context, modifiedFiles, messageToUse)
+                        showCommitPushDialog = false
+                    },
+                    enabled = workspaceCommitMsg.isNotBlank() && !isLoadingWorkspace
+                ) {
+                    Text("Commit & Push")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCommitPushDialog = false }) {
                     Text("Cancel")
                 }
             }

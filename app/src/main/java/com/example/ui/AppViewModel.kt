@@ -361,6 +361,10 @@ class AppViewModel(
                     workspaceDir.mkdirs()
                 }
                 val files = workspaceDir.walkTopDown()
+                    .onEnter { dir ->
+                        val name = dir.name
+                        !name.startsWith(".") && name != "node_modules" && name != "build" && name != "dist" && name != "target" && name != "Pods" && name != "ephemeral"
+                    }
                     .filter { it.isFile && !it.absolutePath.contains("/.") && !it.name.startsWith(".") }
                     .toList()
 
@@ -379,25 +383,50 @@ class AppViewModel(
 
             localFiles.value = collectedFiles
 
-            // Compute modified files
-            val tree = remoteGitTree.value
+            // Retrieve Git Tree baseline if missing
+            var tree = remoteGitTree.value
+            val currentToken = token.value
+            if (tree.isEmpty() && !currentToken.isNullOrBlank()) {
+                try {
+                    val branch = selectedBranch.value
+                    val branchesInfo = githubApi.getBranches("Bearer $currentToken", project.repoOwner, project.repoName)
+                    val activeBranchCommitInfo = branchesInfo.firstOrNull { it.name == branch }
+                    val targetSha = activeBranchCommitInfo?.commit?.sha
+                    if (!targetSha.isNullOrBlank()) {
+                        val response = githubApi.getGitTree("Bearer $currentToken", project.repoOwner, project.repoName, targetSha, recursive = 1)
+                        if (response.isSuccessful) {
+                            val treeEntries = response.body()?.tree ?: emptyList()
+                            remoteGitTree.value = treeEntries
+                            tree = treeEntries
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            // Compute modified files using size-based pre-filtering
             val modifiedList = mutableListOf<LocalModifiedFile>()
 
             for (file in collectedFiles) {
-                val content = if (file.uriString != null) {
-                    readDocContent(context, Uri.parse(file.uriString))
-                } else {
-                    try { file.file?.readText(Charsets.UTF_8) ?: "" } catch (e: Exception) { "" }
-                }
-                val localSha = computeGitSha(content)
-
                 val remoteEntry = tree.firstOrNull { it.path == file.relativePath }
                 if (remoteEntry == null) {
-                    // Not on remote branch -> new file
+                    // Not on remote branch -> untracked/new file
                     modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = true, uriString = file.uriString))
-                } else if (remoteEntry.sha != localSha) {
-                    // Different SHA -> modified file
+                } else if (remoteEntry.size != null && remoteEntry.size != file.size) {
+                    // Different file size -> modified file (No need to read content / compute SHA!)
                     modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = remoteEntry.sha, uriString = file.uriString))
+                } else {
+                    // Size is identical -> load content and verify exact SHA as double verification
+                    val content = if (file.uriString != null) {
+                        readDocContent(context, Uri.parse(file.uriString))
+                    } else {
+                        try { file.file?.readText(Charsets.UTF_8) ?: "" } catch (e: Exception) { "" }
+                    }
+                    val localSha = computeGitSha(content)
+                    if (remoteEntry.sha != localSha) {
+                        modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = remoteEntry.sha, uriString = file.uriString))
+                    }
                 }
             }
             modifiedFiles.value = modifiedList
