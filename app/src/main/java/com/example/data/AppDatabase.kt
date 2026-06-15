@@ -21,6 +21,15 @@ data class GitProject(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "local_commits")
+data class LocalCommit(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val projectId: Int,
+    val commitMessage: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val changesJson: String // Serialized list of CommittedFileChange
+)
+
 @Dao
 interface ProjectDao {
     @Query("SELECT * FROM projects ORDER BY timestamp DESC")
@@ -31,9 +40,19 @@ interface ProjectDao {
 
     @Query("DELETE FROM projects WHERE id = :id")
     suspend fun deleteProjectById(id: Int)
+
+    // Local commits methods
+    @Query("SELECT * FROM local_commits WHERE projectId = :projectId ORDER BY timestamp DESC")
+    fun getLocalCommitsForProject(projectId: Int): Flow<List<LocalCommit>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertLocalCommit(commit: LocalCommit)
+
+    @Query("DELETE FROM local_commits WHERE projectId = :projectId")
+    suspend fun clearLocalCommitsForProject(projectId: Int)
 }
 
-@Database(entities = [GitProject::class], version = 2, exportSchema = false)
+@Database(entities = [GitProject::class, LocalCommit::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao
 }

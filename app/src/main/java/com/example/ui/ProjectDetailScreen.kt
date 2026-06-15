@@ -52,6 +52,7 @@ fun ProjectDetailScreen(
     // Workspace Management States
     val localFiles by viewModel.localFiles.collectAsStateWithLifecycle()
     val modifiedFiles by viewModel.modifiedFiles.collectAsStateWithLifecycle()
+    val localCommits by viewModel.localCommits.collectAsStateWithLifecycle()
     val isLoadingWorkspace by viewModel.isLoadingWorkspace.collectAsStateWithLifecycle()
 
     var showCreateFileDialog by remember { mutableStateOf(false) }
@@ -113,11 +114,11 @@ fun ProjectDetailScreen(
         viewModel.fetchCommits(project.repoOwner, project.repoName, currentBranch)
         viewModel.scanLocalWorkspace(context)
 
-        // Setup a real-time background tracker to instantly recognize edited/new files
+        // Setup a real-time background tracker to instantly recognize edited/new files silently
         while (true) {
             kotlinx.coroutines.delay(2000)
             if (project.localFolderPath.isNotBlank()) {
-                viewModel.scanLocalWorkspace(context)
+                viewModel.scanLocalWorkspace(context, silent = true)
             }
         }
     }
@@ -491,8 +492,25 @@ fun ProjectDetailScreen(
 
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
+                                        // 1. Pull
+                                        OutlinedButton(
+                                            onClick = { viewModel.syncWorkspaceFromGitHub(context) },
+                                            enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank(),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.weight(1f).testTag("pull_git_btn")
+                                        ) {
+                                            if (isLoadingWorkspace && localFiles.isEmpty()) {
+                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                            } else {
+                                                Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            }
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Pull/Sync")
+                                        }
+
+                                        // 2. Commit
                                         Button(
                                             onClick = {
                                                 workspaceCommitMsg = ""
@@ -501,40 +519,39 @@ fun ProjectDetailScreen(
                                             enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank() && modifiedFiles.isNotEmpty(),
                                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                             shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.weight(1.5f).testTag("commit_push_workspace_trigger_btn")
+                                            modifier = Modifier.weight(1.1f).testTag("commit_push_workspace_trigger_btn")
                                         ) {
                                             Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
                                             Text("Commit")
                                         }
 
-                                        OutlinedButton(
-                                            onClick = { viewModel.syncWorkspaceFromGitHub(context) },
-                                            enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank(),
+                                        // 3. Push
+                                        val unpushedCount = localCommits.size
+                                        Button(
+                                            onClick = { viewModel.pushLocalCommitsToGitHub(context) },
+                                            enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank() && unpushedCount > 0,
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                                             shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.weight(1f)
+                                            modifier = Modifier.weight(1.1f).testTag("push_git_btn")
                                         ) {
-                                            if (isLoadingWorkspace) {
-                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                            } else {
-                                                Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            }
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Pull/Sync")
+                                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(if (unpushedCount > 0) "Push ($unpushedCount)" else "Push")
                                         }
                                     }
                                 }
                             }
 
-                            // modifiedFiles status differences
+                            // unified files listing
                             Text(
-                                "Modified / Untracked Changes (${modifiedFiles.size})",
+                                "Workspace Files (${localFiles.size})",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
                             )
 
-                            if (modifiedFiles.isEmpty()) {
+                            if (localFiles.isEmpty()) {
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(12.dp),
@@ -546,10 +563,10 @@ fun ProjectDetailScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.Center
                                     ) {
-                                        Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF2E7D32), modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            "Working tree clean. No differences identified.",
+                                            "No files in workspace. Click Pull/Sync to synchronize.",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -557,65 +574,79 @@ fun ProjectDetailScreen(
                                 }
                             } else {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    modifiedFiles.forEach { mod ->
+                                    localFiles.forEach { file ->
+                                        val mod = modifiedFiles.firstOrNull { it.relativePath == file.relativePath }
                                         Card(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clickable {
-                                                    selectedEditingFileRelativePath = mod.relativePath
-                                                    selectedEditingFileContent = if (mod.uriString != null) {
+                                                    selectedEditingFileRelativePath = file.relativePath
+                                                    selectedEditingFileContent = if (file.uriString != null) {
                                                         try {
-                                                            context.contentResolver.openInputStream(android.net.Uri.parse(mod.uriString))?.use { stream ->
+                                                            context.contentResolver.openInputStream(android.net.Uri.parse(file.uriString))?.use { stream ->
                                                                 stream.bufferedReader(Charsets.UTF_8).readText()
                                                             } ?: ""
                                                         } catch(e: Exception) { "" }
                                                     } else {
-                                                        try { mod.localFile?.readText(Charsets.UTF_8) ?: "" } catch(e: Exception) { "" }
+                                                        try { file.file?.readText(Charsets.UTF_8) ?: "" } catch(e: Exception) { "" }
                                                     }
                                                     showEditFileDialog = true
                                                 },
                                             shape = RoundedCornerShape(10.dp),
-                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = if (mod != null) {
+                                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
+                                                }
+                                            ),
                                             border = BorderStroke(
                                                 width = 1.dp,
-                                                color = if (mod.isNew) Color(0xFF00796B).copy(alpha = 0.4f) else Color(0xFFD84315).copy(alpha = 0.4f)
+                                                color = if (mod != null) {
+                                                    if (mod.isNew) Color(0xFF00796B).copy(alpha = 0.7f) else Color(0xFFD84315).copy(alpha = 0.7f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                                }
                                             )
                                         ) {
-                                            Column(modifier = Modifier.padding(12.dp)) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                                        Icon(
-                                                            Icons.Default.FiberNew,
-                                                            contentDescription = null,
-                                                            tint = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
-                                                            modifier = Modifier.size(20.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(8.dp))
+                                            Row(
+                                                modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                    Icon(
+                                                        Icons.Default.InsertDriveFile,
+                                                        contentDescription = null,
+                                                        tint = if (mod != null) {
+                                                            if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315)
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                                        },
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(
+                                                        file.relativePath,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                }
+                                                if (mod != null) {
+                                                    Surface(
+                                                        color = if (mod.isNew) Color(0xFFE0F2F1) else Color(0xFFFBE9E7),
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
                                                         Text(
-                                                            mod.relativePath,
-                                                            style = MaterialTheme.typography.bodyMedium,
-                                                            fontFamily = FontFamily.Monospace,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
+                                                            text = if (mod.isNew) "UNTRACKED" else "MODIFIED",
+                                                            color = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                                         )
-                                                    }
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Surface(
-                                                            color = if (mod.isNew) Color(0xFFE0F2F1) else Color(0xFFFBE9E7),
-                                                            shape = RoundedCornerShape(8.dp)
-                                                        ) {
-                                                            Text(
-                                                                text = if (mod.isNew) "UNTRACKED" else "MODIFIED",
-                                                                color = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
-                                                                style = MaterialTheme.typography.labelSmall,
-                                                                fontWeight = FontWeight.Bold,
-                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                            )
-                                                        }
                                                     }
                                                 }
                                             }
@@ -901,11 +932,11 @@ fun ProjectDetailScreen(
     if (showCommitPushDialog) {
         AlertDialog(
             onDismissRequest = { showCommitPushDialog = false },
-            title = { Text("Commit & Push Changes") },
+            title = { Text("Local Git Commit") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "You have ${modifiedFiles.size} modified/new files to commit and push.",
+                        "You have ${modifiedFiles.size} modified/new files to commit locally.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     OutlinedTextField(
@@ -923,12 +954,12 @@ fun ProjectDetailScreen(
                 Button(
                     onClick = {
                         val messageToUse = workspaceCommitMsg.ifBlank { "Update files" }
-                        viewModel.pushModifiedFiles(context, modifiedFiles, messageToUse)
+                        viewModel.createLocalCommit(context, messageToUse)
                         showCommitPushDialog = false
                     },
                     enabled = workspaceCommitMsg.isNotBlank() && !isLoadingWorkspace
                 ) {
-                    Text("Commit & Push")
+                    Text("Commit")
                 }
             },
             dismissButton = {

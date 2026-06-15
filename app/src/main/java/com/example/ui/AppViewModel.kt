@@ -14,7 +14,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 class AppViewModel(
     private val projectDao: ProjectDao,
@@ -45,6 +49,7 @@ class AppViewModel(
     val localFiles = MutableStateFlow<List<WorkspaceFile>>(emptyList())
     val remoteGitTree = MutableStateFlow<List<com.example.network.GitTreeEntry>>(emptyList())
     val modifiedFiles = MutableStateFlow<List<LocalModifiedFile>>(emptyList())
+    val localCommits = MutableStateFlow<List<com.example.data.LocalCommit>>(emptyList())
     val isLoadingWorkspace = MutableStateFlow(false)
 
     fun saveCredentials(user: String, tok: String) {
@@ -138,6 +143,13 @@ class AppViewModel(
         selectedProject.value = project
         selectedBranch.value = project.defaultBranch
         fetchBranchesAndCommits()
+        viewModelScope.launch {
+            try {
+                localCommits.value = projectDao.getLocalCommitsForProject(project.id).first()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun selectBranch(branchName: String) {
@@ -336,11 +348,13 @@ class AppViewModel(
         }
     }
 
-    fun scanLocalWorkspace(context: android.content.Context) {
+    fun scanLocalWorkspace(context: android.content.Context, silent: Boolean = false) {
         val project = selectedProject.value ?: return
         val path = project.localFolderPath
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            isLoadingWorkspace.value = true
+            if (!silent) {
+                isLoadingWorkspace.value = true
+            }
             val collectedFiles = mutableListOf<WorkspaceFile>()
 
             if (path.startsWith("content://")) {
@@ -405,32 +419,68 @@ class AppViewModel(
                 }
             }
 
-            // Compute modified files using size-based pre-filtering
+            // Build virtual HEAD state on top of remoteTree using local commits (oldest to newest)
+            val projectLocCommits = try {
+                projectDao.getLocalCommitsForProject(project.id).first()
+            } catch (e: Exception) {
+                emptyList()
+            }
+
+            val virtualHead = mutableMapOf<String, VirtualFileState>()
+            for (entry in tree) {
+                virtualHead[entry.path] = VirtualFileState(
+                    relativePath = entry.path,
+                    sha = entry.sha ?: "",
+                    isDeleted = false
+                )
+            }
+
+            // Apply unpushed local commits in order (oldest to newest, i.e., reversed)
+            for (commit in projectLocCommits.reversed()) {
+                try {
+                    val changes = Json.decodeFromString(
+                        ListSerializer(CommittedFileChange.serializer()),
+                        commit.changesJson
+                    )
+                    for (chg in changes) {
+                        val commitSha = computeGitSha(chg.content)
+                        virtualHead[chg.relativePath] = VirtualFileState(
+                            relativePath = chg.relativePath,
+                            sha = commitSha,
+                            isDeleted = false
+                        )
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            // Compute modified files using SHA comparison against virtual HEAD
             val modifiedList = mutableListOf<LocalModifiedFile>()
 
             for (file in collectedFiles) {
-                val remoteEntry = tree.firstOrNull { it.path == file.relativePath }
-                if (remoteEntry == null) {
-                    // Not on remote branch -> untracked/new file
-                    modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = true, uriString = file.uriString))
-                } else if (remoteEntry.size != null && remoteEntry.size != file.size) {
-                    // Different file size -> modified file (No need to read content / compute SHA!)
-                    modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = remoteEntry.sha, uriString = file.uriString))
+                val headEntry = virtualHead[file.relativePath]
+                
+                val content = if (file.uriString != null) {
+                    readDocContent(context, Uri.parse(file.uriString))
                 } else {
-                    // Size is identical -> load content and verify exact SHA as double verification
-                    val content = if (file.uriString != null) {
-                        readDocContent(context, Uri.parse(file.uriString))
-                    } else {
-                        try { file.file?.readText(Charsets.UTF_8) ?: "" } catch (e: Exception) { "" }
-                    }
-                    val localSha = computeGitSha(content)
-                    if (remoteEntry.sha != localSha) {
-                        modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = remoteEntry.sha, uriString = file.uriString))
-                    }
+                    try { file.file?.readText(Charsets.UTF_8) ?: "" } catch (e: Exception) { "" }
+                }
+                val localSha = computeGitSha(content)
+
+                if (headEntry == null) {
+                    // Not in virtual HEAD -> untracked/new file
+                    modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = true, uriString = file.uriString))
+                } else if (headEntry.sha != localSha) {
+                    // Differs from virtual HEAD -> modified
+                    modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = headEntry.sha, uriString = file.uriString))
                 }
             }
+
             modifiedFiles.value = modifiedList
-            isLoadingWorkspace.value = false
+            if (!silent) {
+                isLoadingWorkspace.value = false
+            }
         }
     }
 
@@ -651,7 +701,63 @@ class AppViewModel(
         }
     }
 
-    fun pushModifiedFiles(context: android.content.Context, filesToPush: List<LocalModifiedFile>, commitMessage: String) {
+    fun createLocalCommit(context: android.content.Context, commitMessage: String) {
+        val project = selectedProject.value ?: return
+        val currentModified = modifiedFiles.value
+        if (currentModified.isEmpty()) return
+
+        viewModelScope.launch {
+            isLoadingWorkspace.value = true
+            try {
+                val changesList = mutableListOf<CommittedFileChange>()
+                for (mod in currentModified) {
+                    val content = if (mod.uriString != null) {
+                        readDocContent(context, Uri.parse(mod.uriString))
+                    } else {
+                        val lf = mod.localFile
+                        if (lf != null && lf.exists()) {
+                            lf.readText(Charsets.UTF_8)
+                        } else ""
+                    }
+                    changesList.add(
+                        CommittedFileChange(
+                            relativePath = mod.relativePath,
+                            content = content,
+                            isNew = mod.isNew,
+                            remoteSha = mod.remoteSha
+                        )
+                    )
+                }
+
+                val changesJson = Json.encodeToString(
+                    ListSerializer(CommittedFileChange.serializer()),
+                    changesList
+                )
+
+                projectDao.insertLocalCommit(
+                    com.example.data.LocalCommit(
+                        projectId = project.id,
+                        commitMessage = commitMessage,
+                        changesJson = changesJson
+                    )
+                )
+
+                gitActionSuccessMsg.value = "Local commit '$commitMessage' created successfully!"
+                
+                // Refresh local commits list
+                localCommits.value = projectDao.getLocalCommitsForProject(project.id).first()
+                
+                // Rescan so modified lists reflect newly committed states
+                scanLocalWorkspace(context, silent = true)
+            } catch (e: Exception) {
+                errorMsg.value = "Failed to create commit: " + e.localizedMessage
+            } finally {
+                isLoadingWorkspace.value = false
+            }
+        }
+    }
+
+    fun pushLocalCommitsToGitHub(context: android.content.Context) {
         val project = selectedProject.value ?: return
         val branch = selectedBranch.value
         viewModelScope.launch {
@@ -663,58 +769,61 @@ class AppViewModel(
             isLoadingWorkspace.value = true
             errorMsg.value = null
             try {
-                var pushedCount = 0
-                for (modFile in filesToPush) {
-                    val relativePath = modFile.relativePath
+                // Get local commits from oldest to newest (reversed from DESC db sequence)
+                val commitsToPush = projectDao.getLocalCommitsForProject(project.id).first().reversed()
+                if (commitsToPush.isEmpty()) {
+                    errorMsg.value = "No local commits to push"
+                    return@launch
+                }
+
+                var totalPushed = 0
+                for (commit in commitsToPush) {
+                    val changes = Json.decodeFromString(
+                        ListSerializer(CommittedFileChange.serializer()),
+                        commit.changesJson
+                    )
                     
-                    val content = if (modFile.uriString != null) {
-                        readDocContent(context, Uri.parse(modFile.uriString))
-                    } else {
-                        val lf = modFile.localFile
-                        if (lf != null && lf.exists()) {
-                            lf.readText(Charsets.UTF_8)
-                        } else {
-                            continue
+                    for (chg in changes) {
+                        val base64Content = Base64.encodeToString(chg.content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                        
+                        var currentSha: String? = chg.remoteSha
+                        if (currentSha == null) {
+                            val fileInfoResponse = githubApi.getFileContent(
+                                "Bearer $currentToken",
+                                project.repoOwner,
+                                project.repoName,
+                                chg.relativePath,
+                                branch
+                            )
+                            if (fileInfoResponse.isSuccessful) {
+                                currentSha = fileInfoResponse.body()?.sha
+                            }
                         }
-                    }
 
-                    val base64Content = Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-
-                    // 1. Get SHA of file if it exists remote (to update it)
-                    var currentSha = modFile.remoteSha
-                    if (currentSha == null) {
-                        val fileInfoResponse = githubApi.getFileContent(
+                        githubApi.createOrUpdateFile(
                             "Bearer $currentToken",
                             project.repoOwner,
                             project.repoName,
-                            relativePath,
-                            branch
+                            chg.relativePath,
+                            CreateOrUpdateFileRequest(
+                                message = "${commit.commitMessage} (pushed: ${chg.relativePath})",
+                                content = base64Content,
+                                branch = branch,
+                                sha = currentSha
+                            )
                         )
-                        if (fileInfoResponse.isSuccessful) {
-                            currentSha = fileInfoResponse.body()?.sha
-                        }
+                        totalPushed++
                     }
-
-                    // 2. Commit & upload to Git
-                    githubApi.createOrUpdateFile(
-                        "Bearer $currentToken",
-                        project.repoOwner,
-                        project.repoName,
-                        relativePath,
-                        CreateOrUpdateFileRequest(
-                            message = "$commitMessage (pushed: $relativePath)",
-                            content = base64Content,
-                            branch = branch,
-                            sha = currentSha
-                        )
-                    )
-                    pushedCount++
                 }
 
-                gitActionSuccessMsg.value = "Pushed $pushedCount modified file(s) cleanly to '$branch'!"
+                // Clear pushed local commits
+                projectDao.clearLocalCommitsForProject(project.id)
+                localCommits.value = emptyList()
+
+                gitActionSuccessMsg.value = "Successfully pushed ${commitsToPush.size} local commit(s) with $totalPushed file changes!"
                 fetchCommits(project.repoOwner, project.repoName, branch)
-                
-                // Re-sync Git tree metadata to update SHA baselines
+
+                // Refresh remote baseline tree
                 val branchesInfo = githubApi.getBranches("Bearer $currentToken", project.repoOwner, project.repoName)
                 val activeBranchCommitInfo = branchesInfo.firstOrNull { it.name == branch }
                 val targetSha = activeBranchCommitInfo?.commit?.sha
@@ -724,16 +833,30 @@ class AppViewModel(
                         remoteGitTree.value = response.body()?.tree ?: emptyList()
                     }
                 }
-                
+
                 scanLocalWorkspace(context)
             } catch (e: Exception) {
-                errorMsg.value = e.localizedMessage ?: "Failed to push files"
+                errorMsg.value = e.localizedMessage ?: "Failed to push commits"
             } finally {
                 isLoadingWorkspace.value = false
             }
         }
     }
 }
+
+@Serializable
+data class CommittedFileChange(
+    val relativePath: String,
+    val content: String,
+    val isNew: Boolean,
+    val remoteSha: String?
+)
+
+data class VirtualFileState(
+    val relativePath: String,
+    val sha: String,
+    val isDeleted: Boolean
+)
 
 data class WorkspaceFile(
     val name: String,
