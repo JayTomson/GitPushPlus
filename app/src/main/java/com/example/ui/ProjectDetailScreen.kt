@@ -518,98 +518,6 @@ fun ProjectDetailScreen(
                                 }
                             }
 
-                            // localFiles inventory tree
-                            Text(
-                                "On-Device Files (${localFiles.size})",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-
-                            if (localFiles.isEmpty()) {
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(24.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            "No local files stored yet.\nTap 'Sync/Clone Repo' to check out remote source files or create a new one.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            textAlign = TextAlign.Center,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    localFiles.forEach { file ->
-                                        val relPath = file.relativePath
-                                        
-                                        Card(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    selectedEditingFileRelativePath = relPath
-                                                    selectedEditingFileContent = if (file.uriString != null) {
-                                                        try {
-                                                            context.contentResolver.openInputStream(android.net.Uri.parse(file.uriString))?.use { stream ->
-                                                                stream.bufferedReader(Charsets.UTF_8).readText()
-                                                            } ?: ""
-                                                        } catch(e: Exception) { "" }
-                                                    } else {
-                                                        try { file.file?.readText(Charsets.UTF_8) ?: "" } catch(e: Exception) { "" }
-                                                    }
-                                                    showEditFileDialog = true
-                                                },
-                                            shape = RoundedCornerShape(8.dp),
-                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(12.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                                    Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text(
-                                                        relPath,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontFamily = FontFamily.Monospace,
-                                                        fontWeight = FontWeight.Bold,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Text(
-                                                        "${file.size} B",
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                    Spacer(modifier = Modifier.width(10.dp))
-                                                    IconButton(
-                                                        onClick = { viewModel.deleteWorkspaceFile(context, relPath) },
-                                                        modifier = Modifier.size(24.dp)
-                                                    ) {
-                                                        Icon(Icons.Default.Delete, contentDescription = "Delete Local File", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
                             // modifiedFiles status differences
                             Text(
                                 "Modified / Untracked Changes (${modifiedFiles.size})",
@@ -643,7 +551,21 @@ fun ProjectDetailScreen(
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     modifiedFiles.forEach { mod ->
                                         Card(
-                                            modifier = Modifier.fillMaxWidth(),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    selectedEditingFileRelativePath = mod.relativePath
+                                                    selectedEditingFileContent = if (mod.uriString != null) {
+                                                        try {
+                                                            context.contentResolver.openInputStream(android.net.Uri.parse(mod.uriString))?.use { stream ->
+                                                                stream.bufferedReader(Charsets.UTF_8).readText()
+                                                            } ?: ""
+                                                        } catch(e: Exception) { "" }
+                                                    } else {
+                                                        try { mod.localFile?.readText(Charsets.UTF_8) ?: "" } catch(e: Exception) { "" }
+                                                    }
+                                                    showEditFileDialog = true
+                                                },
                                             shape = RoundedCornerShape(10.dp),
                                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
                                             border = BorderStroke(
@@ -673,17 +595,30 @@ fun ProjectDetailScreen(
                                                             overflow = TextOverflow.Ellipsis
                                                         )
                                                     }
-                                                    Surface(
-                                                        color = if (mod.isNew) Color(0xFFE0F2F1) else Color(0xFFFBE9E7),
-                                                        shape = RoundedCornerShape(8.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = if (mod.isNew) "UNTRACKED / NEW" else "MODIFIED",
-                                                            color = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                        )
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Surface(
+                                                            color = if (mod.isNew) Color(0xFFE0F2F1) else Color(0xFFFBE9E7),
+                                                            shape = RoundedCornerShape(8.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = if (mod.isNew) "UNTRACKED" else "MODIFIED",
+                                                                color = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.Bold,
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                        IconButton(
+                                                            onClick = { viewModel.deleteWorkspaceFile(context, mod.relativePath) },
+                                                            modifier = Modifier.size(32.dp).padding(start = 4.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Delete,
+                                                                contentDescription = "Delete File",
+                                                                tint = MaterialTheme.colorScheme.error,
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }

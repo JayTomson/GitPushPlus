@@ -339,66 +339,70 @@ class AppViewModel(
     fun scanLocalWorkspace(context: android.content.Context) {
         val project = selectedProject.value ?: return
         val path = project.localFolderPath
-        val collectedFiles = mutableListOf<WorkspaceFile>()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            isLoadingWorkspace.value = true
+            val collectedFiles = mutableListOf<WorkspaceFile>()
 
-        if (path.startsWith("content://")) {
-            // SAF DocumentTree Mode
-            try {
-                val parsedUri = Uri.parse(path)
-                val rootDir = DocumentFile.fromTreeUri(context, parsedUri)
-                if (rootDir != null && rootDir.exists()) {
-                    walkDocumentTree(context, rootDir, rootDir, "", collectedFiles)
+            if (path.startsWith("content://")) {
+                // SAF DocumentTree Mode
+                try {
+                    val parsedUri = Uri.parse(path)
+                    val rootDir = DocumentFile.fromTreeUri(context, parsedUri)
+                    if (rootDir != null && rootDir.exists()) {
+                        walkDocumentTree(context, rootDir, rootDir, "", collectedFiles)
+                    }
+                } catch (e: Exception) {
+                    errorMsg.value = "Failed to scan authorized system directory: " + e.localizedMessage
                 }
-            } catch (e: Exception) {
-                errorMsg.value = "Failed to scan authorized system directory: " + e.localizedMessage
-            }
-        } else {
-            // Legacy / FilesDir Mode
-            val workspaceDir = java.io.File(context.filesDir, path)
-            if (!workspaceDir.exists()) {
-                workspaceDir.mkdirs()
-            }
-            val files = workspaceDir.walkTopDown()
-                .filter { it.isFile && !it.absolutePath.contains("/.") && !it.name.startsWith(".") }
-                .toList()
-
-            for (file in files) {
-                val relativePath = file.relativeTo(workspaceDir).path.replace("\\", "/")
-                collectedFiles.add(
-                    WorkspaceFile(
-                        name = file.name,
-                        relativePath = relativePath,
-                        size = file.length(),
-                        file = file
-                    )
-                )
-            }
-        }
-
-        localFiles.value = collectedFiles
-
-        // Compute modified files
-        val tree = remoteGitTree.value
-        val modifiedList = mutableListOf<LocalModifiedFile>()
-
-        for (file in collectedFiles) {
-            val content = if (file.uriString != null) {
-                readDocContent(context, Uri.parse(file.uriString))
             } else {
-                try { file.file?.readText(Charsets.UTF_8) ?: "" } catch (e: Exception) { "" }
-            }
-            val localSha = computeGitSha(content)
+                // Legacy / FilesDir Mode
+                val workspaceDir = java.io.File(context.filesDir, path)
+                if (!workspaceDir.exists()) {
+                    workspaceDir.mkdirs()
+                }
+                val files = workspaceDir.walkTopDown()
+                    .filter { it.isFile && !it.absolutePath.contains("/.") && !it.name.startsWith(".") }
+                    .toList()
 
-            val remoteEntry = tree.firstOrNull { it.path == file.relativePath }
-            if (remoteEntry == null) {
-                // Not on remote branch -> new file
-                modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = true, uriString = file.uriString))
-            } else if (remoteEntry.sha != localSha) {
-                // Different SHA -> modified file
-                modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = remoteEntry.sha, uriString = file.uriString))
+                for (file in files) {
+                    val relativePath = file.relativeTo(workspaceDir).path.replace("\\", "/")
+                    collectedFiles.add(
+                        WorkspaceFile(
+                            name = file.name,
+                            relativePath = relativePath,
+                            size = file.length(),
+                            file = file
+                        )
+                    )
+                }
             }
+
+            localFiles.value = collectedFiles
+
+            // Compute modified files
+            val tree = remoteGitTree.value
+            val modifiedList = mutableListOf<LocalModifiedFile>()
+
+            for (file in collectedFiles) {
+                val content = if (file.uriString != null) {
+                    readDocContent(context, Uri.parse(file.uriString))
+                } else {
+                    try { file.file?.readText(Charsets.UTF_8) ?: "" } catch (e: Exception) { "" }
+                }
+                val localSha = computeGitSha(content)
+
+                val remoteEntry = tree.firstOrNull { it.path == file.relativePath }
+                if (remoteEntry == null) {
+                    // Not on remote branch -> new file
+                    modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = true, uriString = file.uriString))
+                } else if (remoteEntry.sha != localSha) {
+                    // Different SHA -> modified file
+                    modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = remoteEntry.sha, uriString = file.uriString))
+                }
+            }
+            modifiedFiles.value = modifiedList
+            isLoadingWorkspace.value = false
         }
-        modifiedFiles.value = modifiedList
     }
 
     private fun walkDocumentTree(
