@@ -11,14 +11,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = GitPurplePrimary,
+    primary = GitBluePrimary,
+    onPrimary = androidx.compose.ui.graphics.Color.Black,
+    primaryContainer = GitBlueContainer,
+    onPrimaryContainer = androidx.compose.ui.graphics.Color.White,
     secondary = GitPurpleSecondary,
-    tertiary = GitPurpleTertiary,
-    background = DarkBackground,
-    surface = DarkSurface,
-    surfaceVariant = androidx.compose.ui.graphics.Color(0xFF2C2C2C),
-    onBackground = androidx.compose.ui.graphics.Color.White,
-    onSurface = androidx.compose.ui.graphics.Color.White
+    onSecondary = androidx.compose.ui.graphics.Color.White,
+    secondaryContainer = GitPurpleContainer,
+    onSecondaryContainer = androidx.compose.ui.graphics.Color.White,
+    tertiary = GitGreenTertiary,
+    background = AppDarkBackground,
+    onBackground = TextPrimary,
+    surface = AppDarkSurface,
+    onSurface = TextPrimary,
+    surfaceVariant = AppDarkSurfaceVariant,
+    onSurfaceVariant = TextSecondary,
+    error = androidx.compose.ui.graphics.Color(0xFFF85149),
+    errorContainer = androidx.compose.ui.graphics.Color(0xFF8E1519),
+    onErrorContainer = androidx.compose.ui.graphics.Color.White
 )
 
 @Composable

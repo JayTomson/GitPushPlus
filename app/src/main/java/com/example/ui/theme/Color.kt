@@ -2,8 +2,15 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val GitPurplePrimary = Color(0xFFA259FF)
-val GitPurpleSecondary = Color(0xFFC08FFF)
-val GitPurpleTertiary = Color(0xFF6B11FF)
-val DarkBackground = Color(0xFF121212)
-val DarkSurface = Color(0xFF1E1E1E)
+val GitBluePrimary = Color(0xFF58A6FF)
+val GitBlueContainer = Color(0xFF1F6FEB)
+val GitPurpleSecondary = Color(0xFF8957E5)
+val GitPurpleContainer = Color(0xFF6E40C9)
+val GitGreenTertiary = Color(0xFF3FB950)
+
+val AppDarkBackground = Color(0xFF0D1117)
+val AppDarkSurface = Color(0xFF161B22)
+val AppDarkSurfaceVariant = Color(0xFF21262D)
+
+val TextPrimary = Color(0xFFC9D1D9)
+val TextSecondary = Color(0xFF8B949E)
