@@ -18,8 +18,8 @@ import com.example.network.GithubApiService
 import com.example.ui.AppViewModel
 import com.example.ui.GitPushPlusApp
 import com.example.ui.theme.MyApplicationTheme
-import okhttp.OkHttpClient
-import okhttp.logging.HttpLoggingInterceptor
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 
