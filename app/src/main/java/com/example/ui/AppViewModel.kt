@@ -148,6 +148,16 @@ class AppViewModel(
         }
     }
 
+    fun updateProjectLocalFolderPath(context: android.content.Context, path: String) {
+        val current = selectedProject.value ?: return
+        viewModelScope.launch {
+            val updated = current.copy(localFolderPath = path)
+            projectDao.insertProject(updated)
+            selectedProject.value = updated
+            scanLocalWorkspace(context)
+        }
+    }
+
     fun fetchBranchesAndCommits() {
         val project = selectedProject.value ?: return
         fetchBranches(project.repoOwner, project.repoName)

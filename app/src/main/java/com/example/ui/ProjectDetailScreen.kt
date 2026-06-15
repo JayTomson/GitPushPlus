@@ -2,6 +2,7 @@ package com.example.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -75,6 +76,36 @@ fun ProjectDetailScreen(
     var newBranchName by remember { mutableStateOf("") }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    val folderPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val takeFlags: Int = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            viewModel.updateProjectLocalFolderPath(context, uri.toString())
+        }
+    }
+
+    val displayFolderName = remember(project.localFolderPath) {
+        if (project.localFolderPath.startsWith("content://")) {
+            try {
+                val parsedUri = android.net.Uri.parse(project.localFolderPath)
+                val docFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, parsedUri)
+                docFile?.name ?: "System Folder"
+            } catch (e: Exception) {
+                "System Folder"
+            }
+        } else {
+            project.localFolderPath.ifBlank { "Internal Storage" }
+        }
+    }
+
     // Sync on launch or when selection changes
     LaunchedEffect(project.id, currentBranch) {
         viewModel.fetchBranches(project.repoOwner, project.repoName)
@@ -385,8 +416,9 @@ fun ProjectDetailScreen(
 
                             // Workspace directory info & Sync control
                             Card(
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                shape = RoundedCornerShape(12.dp)
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                             ) {
                                 Column(modifier = Modifier.padding(14.dp)) {
                                     Row(
@@ -394,43 +426,76 @@ fun ProjectDetailScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Column {
-                                            Text(
-                                                "Local Directory Path",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontWeight = FontWeight.Bold
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            Icon(
+                                                imageVector = Icons.Default.FolderOpen,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(24.dp)
                                             )
-                                            Text(
-                                                project.localFolderPath,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontFamily = FontFamily.Monospace
-                                            )
-                                        }
-                                        if (isLoadingWorkspace) {
-                                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                                        } else {
-                                            IconButton(
-                                                onClick = { viewModel.syncWorkspaceFromGitHub(context) },
-                                                modifier = Modifier.testTag("workspace_sync_btn")
-                                            ) {
-                                                Icon(Icons.Default.Sync, contentDescription = "Sync from GitHub", tint = MaterialTheme.colorScheme.primary)
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column {
+                                                Text(
+                                                    "Git Local Workspace Folder",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = displayFolderName,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
                                             }
                                         }
+                                        
+                                        Button(
+                                            onClick = { folderPickerLauncher.launch(null) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier.testTag("select_device_folder_btn")
+                                        ) {
+                                            Text(if (project.localFolderPath.isBlank()) "Select" else "Change")
+                                        }
                                     }
+                                    
+                                    if (project.localFolderPath.isNotBlank()) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = if (project.localFolderPath.startsWith("content://")) {
+                                                "Storage URI: ${project.localFolderPath}"
+                                            } else {
+                                                "Internal Path: ${project.localFolderPath}"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    
                                     Spacer(modifier = Modifier.height(10.dp))
+                                    Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)))
+                                    Spacer(modifier = Modifier.height(10.dp))
+
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         Button(
                                             onClick = { viewModel.syncWorkspaceFromGitHub(context) },
-                                            enabled = !isLoadingWorkspace,
+                                            enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank(),
                                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier.weight(1f)
                                         ) {
-                                            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            if (isLoadingWorkspace) {
+                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onSecondary, strokeWidth = 2.dp)
+                                            } else {
+                                                Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            }
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Text("Sync/Clone Repo")
                                         }
@@ -441,6 +506,7 @@ fun ProjectDetailScreen(
                                                 fileTextContentInput = ""
                                                 showCreateFileDialog = true
                                             },
+                                            enabled = project.localFolderPath.isNotBlank(),
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier.weight(1f).testTag("new_local_file_btn")
                                         ) {
