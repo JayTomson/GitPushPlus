@@ -51,6 +51,7 @@ fun ProjectDetailScreen(
 
     // Workspace Management States
     val localFiles by viewModel.localFiles.collectAsStateWithLifecycle()
+    val unstagedChanges by viewModel.unstagedChanges.collectAsStateWithLifecycle()
     val modifiedFiles by viewModel.modifiedFiles.collectAsStateWithLifecycle()
     val localCommits by viewModel.localCommits.collectAsStateWithLifecycle()
     val isLoadingWorkspace by viewModel.isLoadingWorkspace.collectAsStateWithLifecycle()
@@ -58,6 +59,7 @@ fun ProjectDetailScreen(
     var showCreateFileDialog by remember { mutableStateOf(false) }
     var showEditFileDialog by remember { mutableStateOf(false) }
     var showCommitPushDialog by remember { mutableStateOf(false) }
+    var showResetConfirmDialog by remember { mutableStateOf(false) }
     var relativePathInput by remember { mutableStateOf("") }
     var fileTextContentInput by remember { mutableStateOf("") }
     var workspaceCommitMsg by remember { mutableStateOf("") }
@@ -460,30 +462,64 @@ fun ProjectDetailScreen(
                                             }
                                         }
                                         
-                                        Button(
-                                            onClick = { folderPickerLauncher.launch(null) },
-                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                            shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.testTag("select_device_folder_btn")
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(if (project.localFolderPath.isBlank()) "Select" else "Change")
+                                            if (project.localFolderPath.isNotBlank()) {
+                                                IconButton(
+                                                    onClick = { viewModel.syncWorkspaceFromGitHub(context) },
+                                                    modifier = Modifier.size(36.dp)
+                                                ) {
+                                                     Icon(
+                                                         imageVector = Icons.Default.CloudDownload,
+                                                         contentDescription = "Sync from Remote GitHub",
+                                                         tint = MaterialTheme.colorScheme.primary
+                                                     )
+                                                }
+                                            }
+                                            Button(
+                                                onClick = { folderPickerLauncher.launch(null) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.testTag("select_device_folder_btn")
+                                            ) {
+                                                Text(if (project.localFolderPath.isBlank()) "Select" else "Change")
+                                            }
                                         }
                                     }
                                     
                                     if (project.localFolderPath.isNotBlank()) {
                                         Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = if (project.localFolderPath.startsWith("content://")) {
-                                                "Storage URI: ${project.localFolderPath}"
-                                            } else {
-                                                "Internal Path: ${project.localFolderPath}"
-                                            },
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = if (project.localFolderPath.startsWith("content://")) {
+                                                    "Storage URI: ${project.localFolderPath}"
+                                                } else {
+                                                    "Internal Path: ${project.localFolderPath}"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            
+                                            TextButton(
+                                                onClick = { showResetConfirmDialog = true },
+                                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                                modifier = Modifier.height(28.dp)
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(2.dp))
+                                                Text("Reset", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
                                     }
                                     
                                     Spacer(modifier = Modifier.height(10.dp))
@@ -494,9 +530,10 @@ fun ProjectDetailScreen(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        // 1. Pull
+                                        // 1. Stage (git add .)
+                                        val unstagedCount = unstagedChanges.size
                                         OutlinedButton(
-                                            onClick = { viewModel.syncWorkspaceFromGitHub(context) },
+                                            onClick = { viewModel.runGitAddAll(context) },
                                             enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank(),
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier.weight(1f).testTag("pull_git_btn")
@@ -507,7 +544,7 @@ fun ProjectDetailScreen(
                                                 Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
                                             }
                                             Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Pull/Sync")
+                                            Text(if (unstagedCount > 0) "Add ($unstagedCount)" else "git add .")
                                         }
 
                                         // 2. Commit
@@ -576,6 +613,10 @@ fun ProjectDetailScreen(
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     localFiles.forEach { file ->
                                         val mod = modifiedFiles.firstOrNull { it.relativePath == file.relativePath }
+                                        val unstagedMod = unstagedChanges.firstOrNull { it.relativePath == file.relativePath }
+                                        val isStaged = mod != null
+                                        val isUnstagedOnly = !isStaged && unstagedMod != null
+
                                         Card(
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -594,16 +635,20 @@ fun ProjectDetailScreen(
                                                 },
                                             shape = RoundedCornerShape(10.dp),
                                             colors = CardDefaults.cardColors(
-                                                containerColor = if (mod != null) {
+                                                containerColor = if (isStaged) {
                                                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                                } else if (isUnstagedOnly) {
+                                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
                                                 } else {
                                                     MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
                                                 }
                                             ),
                                             border = BorderStroke(
                                                 width = 1.dp,
-                                                color = if (mod != null) {
-                                                    if (mod.isNew) Color(0xFF00796B).copy(alpha = 0.7f) else Color(0xFFD84315).copy(alpha = 0.7f)
+                                                color = if (isStaged) {
+                                                    if (mod!!.isNew) Color(0xFF00796B).copy(alpha = 0.7f) else Color(0xFFD84315).copy(alpha = 0.7f)
+                                                } else if (isUnstagedOnly) {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
                                                 } else {
                                                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                                                 }
@@ -618,8 +663,10 @@ fun ProjectDetailScreen(
                                                     Icon(
                                                         Icons.Default.InsertDriveFile,
                                                         contentDescription = null,
-                                                        tint = if (mod != null) {
-                                                            if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315)
+                                                        tint = if (isStaged) {
+                                                            if (mod!!.isNew) Color(0xFF00796B) else Color(0xFFD84315)
+                                                        } else if (isUnstagedOnly) {
+                                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                                         } else {
                                                             MaterialTheme.colorScheme.onSurfaceVariant
                                                         },
@@ -635,14 +682,27 @@ fun ProjectDetailScreen(
                                                         color = MaterialTheme.colorScheme.onSurface
                                                     )
                                                 }
-                                                if (mod != null) {
+                                                if (isStaged) {
                                                     Surface(
-                                                        color = if (mod.isNew) Color(0xFFE0F2F1) else Color(0xFFFBE9E7),
+                                                        color = if (mod!!.isNew) Color(0xFFE0F2F1) else Color(0xFFFBE9E7),
                                                         shape = RoundedCornerShape(6.dp)
                                                     ) {
                                                         Text(
                                                             text = if (mod.isNew) "UNTRACKED" else "MODIFIED",
                                                             color = if (mod.isNew) Color(0xFF00796B) else Color(0xFFD84315),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                } else if (isUnstagedOnly) {
+                                                    Surface(
+                                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (unstagedMod!!.isNew) "UNSTAGED (NEW)" else "UNSTAGED",
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                             style = MaterialTheme.typography.labelSmall,
                                                             fontWeight = FontWeight.Bold,
                                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -964,6 +1024,35 @@ fun ProjectDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCommitPushDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showResetConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirmDialog = false },
+            title = { Text("Reset Workspace config & files?") },
+            text = {
+                Text(
+                    text = "This action will completely delete all local workspace files, clear all unpushed local commits, and reset the local repository state. This cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.resetLocalGitWorkspace(context)
+                        showResetConfirmDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Reset Everything")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirmDialog = false }) {
                     Text("Cancel")
                 }
             }
