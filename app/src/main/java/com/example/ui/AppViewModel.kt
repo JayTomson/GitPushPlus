@@ -451,10 +451,7 @@ class AppViewModel(
         // Apply unpushed local commits in order (oldest to newest)
         for (commit in projectLocCommits.reversed()) {
             try {
-                val changes = Json.decodeFromString(
-                    ListSerializer(CommittedFileChange.serializer()),
-                    commit.changesJson
-                )
+                val changes = Json.decodeFromString<List<CommittedFileChange>>(commit.changesJson)
                 for (chg in changes) {
                     val commitSha = computeGitSha(chg.content)
                     virtualHead[chg.relativePath] = VirtualFileState(
@@ -463,7 +460,7 @@ class AppViewModel(
                         isDeleted = false
                     )
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 e.printStackTrace()
             }
         }
@@ -781,39 +778,44 @@ class AppViewModel(
 
         viewModelScope.launch {
             isLoadingWorkspace.value = true
+            errorMsg.value = null
             try {
-                val changesList = mutableListOf<CommittedFileChange>()
-                for (mod in currentModified) {
-                    val content = if (mod.uriString != null) {
-                        readDocContent(context, Uri.parse(mod.uriString))
-                    } else {
-                        val lf = mod.localFile
-                        if (lf != null && lf.exists()) {
-                            lf.readText(Charsets.UTF_8)
-                        } else ""
+                val updatedCommits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val changesList = mutableListOf<CommittedFileChange>()
+                    for (mod in currentModified) {
+                        val content = if (mod.uriString != null) {
+                            readDocContent(context, Uri.parse(mod.uriString))
+                        } else {
+                            val lf = mod.localFile
+                            if (lf != null && lf.exists()) {
+                                lf.readText(Charsets.UTF_8)
+                            } else ""
+                        }
+                        changesList.add(
+                            CommittedFileChange(
+                                relativePath = mod.relativePath,
+                                content = content,
+                                isNew = mod.isNew,
+                                remoteSha = mod.remoteSha
+                            )
+                        )
                     }
-                    changesList.add(
-                        CommittedFileChange(
-                            relativePath = mod.relativePath,
-                            content = content,
-                            isNew = mod.isNew,
-                            remoteSha = mod.remoteSha
+
+                    val changesJson = Json.encodeToString(
+                        ListSerializer(CommittedFileChange.serializer()),
+                        changesList
+                    )
+
+                    projectDao.insertLocalCommit(
+                        com.example.data.LocalCommit(
+                            projectId = project.id,
+                            commitMessage = commitMessage,
+                            changesJson = changesJson
                         )
                     )
+
+                    projectDao.getLocalCommitsForProject(project.id).first()
                 }
-
-                val changesJson = Json.encodeToString(
-                    ListSerializer(CommittedFileChange.serializer()),
-                    changesList
-                )
-
-                projectDao.insertLocalCommit(
-                    com.example.data.LocalCommit(
-                        projectId = project.id,
-                        commitMessage = commitMessage,
-                        changesJson = changesJson
-                    )
-                )
 
                 gitActionSuccessMsg.value = "Local commit '$commitMessage' created successfully!"
                 
@@ -821,12 +823,13 @@ class AppViewModel(
                 modifiedFiles.value = emptyList()
 
                 // Refresh local commits list
-                localCommits.value = projectDao.getLocalCommitsForProject(project.id).first()
+                localCommits.value = updatedCommits
                 
                 // Rescan so modified lists reflect newly committed states
                 scanLocalWorkspace(context, silent = true)
-            } catch (e: Exception) {
-                errorMsg.value = "Failed to create commit: " + e.localizedMessage
+            } catch (e: Throwable) {
+                e.printStackTrace()
+                errorMsg.value = "Failed to create commit: " + (e.localizedMessage ?: e.message ?: "Unknown error")
             } finally {
                 isLoadingWorkspace.value = false
             }
@@ -845,58 +848,56 @@ class AppViewModel(
             isLoadingWorkspace.value = true
             errorMsg.value = null
             try {
-                // Get local commits from oldest to newest (reversed from DESC db sequence)
-                val commitsToPush = projectDao.getLocalCommitsForProject(project.id).first().reversed()
-                if (commitsToPush.isEmpty()) {
-                    errorMsg.value = "No local commits to push"
-                    return@launch
-                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    // Get local commits from oldest to newest (reversed from DESC db sequence)
+                    val commitsToPush = projectDao.getLocalCommitsForProject(project.id).first().reversed()
+                    if (commitsToPush.isEmpty()) {
+                        throw IllegalStateException("No local commits to push")
+                    }
 
-                var totalPushed = 0
-                for (commit in commitsToPush) {
-                    val changes = Json.decodeFromString(
-                        ListSerializer(CommittedFileChange.serializer()),
-                        commit.changesJson
-                    )
-                    
-                    for (chg in changes) {
-                        val base64Content = Base64.encodeToString(chg.content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                    var totalPushed = 0
+                    for (commit in commitsToPush) {
+                        val changes = Json.decodeFromString<List<CommittedFileChange>>(commit.changesJson)
                         
-                        var currentSha: String? = chg.remoteSha
-                        if (currentSha == null) {
-                            val fileInfoResponse = githubApi.getFileContent(
+                        for (chg in changes) {
+                            val base64Content = Base64.encodeToString(chg.content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                            
+                            var currentSha: String? = chg.remoteSha
+                            if (currentSha == null) {
+                                val fileInfoResponse = githubApi.getFileContent(
+                                    "Bearer $currentToken",
+                                    project.repoOwner,
+                                    project.repoName,
+                                    chg.relativePath,
+                                    branch
+                                )
+                                if (fileInfoResponse.isSuccessful) {
+                                    currentSha = fileInfoResponse.body()?.sha
+                                }
+                            }
+
+                            githubApi.createOrUpdateFile(
                                 "Bearer $currentToken",
                                 project.repoOwner,
                                 project.repoName,
                                 chg.relativePath,
-                                branch
+                                CreateOrUpdateFileRequest(
+                                    message = "${commit.commitMessage} (pushed: ${chg.relativePath})",
+                                    content = base64Content,
+                                    branch = branch,
+                                    sha = currentSha
+                                )
                             )
-                            if (fileInfoResponse.isSuccessful) {
-                                currentSha = fileInfoResponse.body()?.sha
-                            }
+                            totalPushed++
                         }
-
-                        githubApi.createOrUpdateFile(
-                            "Bearer $currentToken",
-                            project.repoOwner,
-                            project.repoName,
-                            chg.relativePath,
-                            CreateOrUpdateFileRequest(
-                                message = "${commit.commitMessage} (pushed: ${chg.relativePath})",
-                                content = base64Content,
-                                branch = branch,
-                                sha = currentSha
-                            )
-                        )
-                        totalPushed++
                     }
+
+                    // Clear pushed local commits
+                    projectDao.clearLocalCommitsForProject(project.id)
                 }
 
-                // Clear pushed local commits
-                projectDao.clearLocalCommitsForProject(project.id)
                 localCommits.value = emptyList()
-
-                gitActionSuccessMsg.value = "Successfully pushed ${commitsToPush.size} local commit(s) with $totalPushed file changes!"
+                gitActionSuccessMsg.value = "Successfully pushed local commits!"
                 fetchCommits(project.repoOwner, project.repoName, branch)
 
                 // Refresh remote baseline tree
@@ -911,7 +912,8 @@ class AppViewModel(
                 }
 
                 scanLocalWorkspace(context)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                e.printStackTrace()
                 errorMsg.value = e.localizedMessage ?: "Failed to push commits"
             } finally {
                 isLoadingWorkspace.value = false
