@@ -53,6 +53,25 @@ class AppViewModel(
     val localCommits = MutableStateFlow<List<com.example.data.LocalCommit>>(emptyList())
     val isLoadingWorkspace = MutableStateFlow(false)
 
+    private var localCommitsJob: kotlinx.coroutines.Job? = null
+
+    init {
+        viewModelScope.launch {
+            selectedProject.collect { project ->
+                localCommitsJob?.cancel()
+                if (project != null) {
+                    localCommitsJob = viewModelScope.launch {
+                        projectDao.getLocalCommitsForProject(project.id).collect { commits ->
+                            localCommits.value = commits
+                        }
+                    }
+                } else {
+                    localCommits.value = emptyList()
+                }
+            }
+        }
+    }
+
     fun saveCredentials(user: String, tok: String) {
         viewModelScope.launch {
             settingsRepository.saveCredentials(user, tok)
@@ -144,13 +163,6 @@ class AppViewModel(
         selectedProject.value = project
         selectedBranch.value = project.defaultBranch
         fetchBranchesAndCommits()
-        viewModelScope.launch {
-            try {
-                localCommits.value = projectDao.getLocalCommitsForProject(project.id).first()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
     }
 
     fun selectBranch(branchName: String) {
