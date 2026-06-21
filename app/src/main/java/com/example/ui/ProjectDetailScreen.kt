@@ -47,7 +47,7 @@ fun ProjectDetailScreen(
     val successMsg by viewModel.gitActionSuccessMsg.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf(0) }
-    var currentBranch by remember { mutableStateOf(project.defaultBranch) }
+    val currentBranch by viewModel.selectedBranch.collectAsStateWithLifecycle()
 
     // Workspace Management States
     val localFiles by viewModel.localFiles.collectAsStateWithLifecycle()
@@ -110,15 +110,17 @@ fun ProjectDetailScreen(
         }
     }
 
-    // Sync on launch or when selection changes
-    LaunchedEffect(project.id, currentBranch) {
+    LaunchedEffect(project.id) {
+        if (viewModel.selectedBranch.value != project.defaultBranch && viewModel.selectedBranch.value == "main" && project.defaultBranch != "main") {
+            viewModel.selectBranch(project.defaultBranch) // Initialize if not matching
+        }
         viewModel.fetchBranches(project.repoOwner, project.repoName)
-        viewModel.fetchCommits(project.repoOwner, project.repoName, currentBranch)
+        viewModel.fetchCommits(project.repoOwner, project.repoName, viewModel.selectedBranch.value)
         viewModel.scanLocalWorkspace(context)
 
         // Setup a real-time background tracker to instantly recognize edited/new files silently
         while (true) {
-            kotlinx.coroutines.delay(2000)
+            kotlinx.coroutines.delay(15000)
             if (project.localFolderPath.isNotBlank()) {
                 viewModel.scanLocalWorkspace(context, silent = true)
             }
@@ -271,7 +273,7 @@ fun ProjectDetailScreen(
                             items(branches) { branch ->
                                 FilterChip(
                                     selected = currentBranch == branch.name,
-                                    onClick = { currentBranch = branch.name },
+                                            onClick = { viewModel.selectBranch(branch.name) },
                                     label = { Text(branch.name, fontFamily = FontFamily.Monospace, fontSize = 12.sp) },
                                     colors = FilterChipDefaults.filterChipColors(
                                         selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -536,7 +538,7 @@ fun ProjectDetailScreen(
                                             onClick = { viewModel.runGitAddAll(context) },
                                             enabled = !isLoadingWorkspace && project.localFolderPath.isNotBlank(),
                                             shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.weight(1f).testTag("pull_git_btn")
+                                            modifier = Modifier.weight(1f).testTag("add_all_btn")
                                         ) {
                                             if (isLoadingWorkspace && localFiles.isEmpty()) {
                                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -581,12 +583,28 @@ fun ProjectDetailScreen(
                             }
 
                             // unified files listing
-                            Text(
-                                "Workspace Files (${localFiles.size})",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Workspace Files (${localFiles.size})",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                IconButton(
+                                    onClick = {
+                                        relativePathInput = ""
+                                        fileTextContentInput = ""
+                                        showCreateFileDialog = true
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.NoteAdd, contentDescription = "Create File", tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
 
                             if (localFiles.isEmpty()) {
                                 Surface(
@@ -893,7 +911,6 @@ fun ProjectDetailScreen(
                 Button(
                     onClick = {
                         viewModel.createBranch(newBranchName, currentBranch)
-                        currentBranch = newBranchName
                         showCreateBranchDialog = false
                     },
                     enabled = newBranchName.isNotBlank()

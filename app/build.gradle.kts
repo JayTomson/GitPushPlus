@@ -52,18 +52,11 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
       if (file(keystorePath).exists()) {
         signingConfig = signingConfigs.getByName("release")
-      } else {
-        val customDebugKeystore = file("${rootDir}/debug.keystore")
-        if (customDebugKeystore.exists()) {
-          signingConfig = signingConfigs.getByName("debugConfig")
-        } else {
-          signingConfig = signingConfigs.getByName("debug")
-        }
       }
     }
     debug {
@@ -110,6 +103,7 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
+  implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)

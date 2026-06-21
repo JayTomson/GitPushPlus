@@ -1,40 +1,47 @@
 package com.example.data
 
 import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-
-val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class SettingsRepository(private val context: Context) {
 
-    private val KEY_USERNAME = stringPreferencesKey("github_username")
-    private val KEY_TOKEN = stringPreferencesKey("github_token")
+    private val masterKey = MasterKey.Builder(context)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
 
-    val usernameFlow: Flow<String?> = context.dataStore.data.map { prefs ->
-        prefs[KEY_USERNAME]
-    }
+    private val sharedPrefs = EncryptedSharedPreferences.create(
+        context,
+        "secure_settings",
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+    )
 
-    val tokenFlow: Flow<String?> = context.dataStore.data.map { prefs ->
-        prefs[KEY_TOKEN]
-    }
+    private val _usernameFlow = MutableStateFlow(sharedPrefs.getString("github_username", null))
+    val usernameFlow: StateFlow<String?> = _usernameFlow.asStateFlow()
+
+    private val _tokenFlow = MutableStateFlow(sharedPrefs.getString("github_token", null))
+    val tokenFlow: StateFlow<String?> = _tokenFlow.asStateFlow()
 
     suspend fun saveCredentials(username: String, token: String) {
-        context.dataStore.edit { prefs ->
-            prefs[KEY_USERNAME] = username
-            prefs[KEY_TOKEN] = token
-        }
+        sharedPrefs.edit()
+            .putString("github_username", username)
+            .putString("github_token", token)
+            .apply()
+        _usernameFlow.value = username
+        _tokenFlow.value = token
     }
 
     suspend fun clearCredentials() {
-        context.dataStore.edit { prefs ->
-            prefs.remove(KEY_USERNAME)
-            prefs.remove(KEY_TOKEN)
-        }
+        sharedPrefs.edit()
+            .remove("github_username")
+            .remove("github_token")
+            .apply()
+        _usernameFlow.value = null
+        _tokenFlow.value = null
     }
 }

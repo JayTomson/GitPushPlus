@@ -74,7 +74,22 @@ class AppViewModel(
 
     fun saveCredentials(user: String, tok: String) {
         viewModelScope.launch {
-            settingsRepository.saveCredentials(user, tok)
+            try {
+                isLoadingRepos.value = true
+                val response = githubApi.getUserInfo("Bearer $tok")
+                if (response.isSuccessful && response.body()?.login.equals(user, ignoreCase = true)) {
+                    settingsRepository.saveCredentials(user, tok)
+                    errorMsg.value = null
+                } else if (response.isSuccessful) {
+                    errorMsg.value = "Token is valid but belongs to user '${response.body()?.login}', not '$user'"
+                } else {
+                    errorMsg.value = "Invalid token or username: ${response.code()} ${response.message()}"
+                }
+            } catch (e: Exception) {
+                errorMsg.value = "Failed to validate credentials: ${e.localizedMessage}"
+            } finally {
+                isLoadingRepos.value = false
+            }
         }
     }
 
@@ -132,7 +147,7 @@ class AppViewModel(
         }
     }
 
-    fun createAndAddProject(appProjectName: String, repoName: String, isPrivate: Boolean, defaultBranch: String, localFolderPath: String = "") {
+    fun createAndAddProject(appProjectName: String, repoName: String, isPrivate: Boolean, localFolderPath: String = "") {
         viewModelScope.launch {
             val currentToken = token.value
             val currentUser = username.value
@@ -148,7 +163,7 @@ class AppViewModel(
                     CreateRepoRequest(name = repoName, isPrivate = isPrivate, autoInit = true)
                 )
                 // Add the project locally with the specified branch
-                addProject(appProjectName, currentUser, newRepo.name, defaultBranch, localFolderPath)
+                addProject(appProjectName, currentUser, newRepo.name, newRepo.defaultBranch ?: "main", localFolderPath)
                 gitActionSuccessMsg.value = "Repository '$repoName' created successfully!"
                 fetchRepos()
             } catch (e: Exception) {
@@ -167,6 +182,7 @@ class AppViewModel(
 
     fun selectBranch(branchName: String) {
         selectedBranch.value = branchName
+        remoteGitTree.value = emptyList()
         val project = selectedProject.value
         if (project != null) {
             fetchCommits(project.repoOwner, project.repoName, branchName)
@@ -321,7 +337,7 @@ class AppViewModel(
                 val base64Content = Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 
                 // 3. Create or update file
-                githubApi.createOrUpdateFile(
+                val response = githubApi.createOrUpdateFile(
                     "Bearer $currentToken",
                     project.repoOwner,
                     project.repoName,
@@ -333,6 +349,10 @@ class AppViewModel(
                         sha = sha
                     )
                 )
+
+                if (!response.isSuccessful) {
+                    throw Exception("API error ${response.code()}: ${response.message()}")
+                }
 
                 gitActionSuccessMsg.value = "File '$path' successfully committed to '$currentBranch'!"
                 fetchCommits(project.repoOwner, project.repoName, currentBranch)
@@ -538,7 +558,9 @@ class AppViewModel(
                             val rootDoc = DocumentFile.fromTreeUri(context, rootUri)
                             if (rootDoc != null && rootDoc.exists() && rootDoc.isDirectory) {
                                 for (f in rootDoc.listFiles()) {
-                                    f.delete()
+                                    if (!f.delete()) {
+                                        errorMsg.value = "Failed to clear SAF directory."
+                                    }
                                 }
                             }
                         } else {
@@ -700,19 +722,21 @@ class AppViewModel(
                     for (entry in treeEntries.filter { it.type == "blob" }) {
                         val fileResponse = githubApi.getFileContent("Bearer $currentToken", project.repoOwner, project.repoName, entry.path, branch)
                         if (fileResponse.isSuccessful) {
-                            val base64Content = fileResponse.body()?.content?.replace("\n", "")?.replace("\r", "")?.replace(" ", "") ?: ""
+                            val base64Content = fileResponse.body()?.content?.filterNot { it.isWhitespace() } ?: ""
                             val decodedBytes = Base64.decode(base64Content, Base64.DEFAULT)
                             val decodedString = String(decodedBytes, Charsets.UTF_8)
                             
                             val path = project.localFolderPath
                             if (path.startsWith("content://")) {
+                                if (entry.path.contains("..")) continue
                                 val docFile = getOrCreateDocumentFile(context, path, entry.path)
                                 if (docFile != null) {
                                     writeDocContent(context, docFile.uri, decodedString)
                                 }
                             } else {
-                                val workspaceDir = java.io.File(context.filesDir, path)
-                                val localFile = java.io.File(workspaceDir, entry.path)
+                                val workspaceDir = java.io.File(context.filesDir, path).canonicalFile
+                                val localFile = java.io.File(workspaceDir, entry.path).canonicalFile
+                                if (!localFile.path.startsWith(workspaceDir.path)) continue
                                 localFile.parentFile?.mkdirs()
                                 localFile.writeText(decodedString, Charsets.UTF_8)
                             }
@@ -768,13 +792,17 @@ class AppViewModel(
                 for (part in parts) {
                     current = current?.findFile(part)
                 }
-                current?.delete()
+                if (current?.delete() == false) {
+                    errorMsg.value = "Failed to delete file via SAF."
+                }
                 scanLocalWorkspace(context)
             } else {
                 val workspaceDir = java.io.File(context.filesDir, path)
                 val targetFile = java.io.File(workspaceDir, relativePath)
                 if (targetFile.exists()) {
-                    targetFile.delete()
+                    if (!targetFile.delete()) {
+                        errorMsg.value = "Failed to delete local file."
+                    }
                 }
                 scanLocalWorkspace(context)
             }
@@ -870,6 +898,7 @@ class AppViewModel(
                     var totalPushed = 0
                     for (commit in commitsToPush) {
                         val changes = Json.decodeFromString<List<CommittedFileChange>>(commit.changesJson)
+                        var commitSuccess = true
                         
                         for (chg in changes) {
                             val base64Content = Base64.encodeToString(chg.content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
@@ -888,24 +917,49 @@ class AppViewModel(
                                 }
                             }
 
-                            githubApi.createOrUpdateFile(
-                                "Bearer $currentToken",
-                                project.repoOwner,
-                                project.repoName,
-                                chg.relativePath,
-                                CreateOrUpdateFileRequest(
-                                    message = "${commit.commitMessage} (pushed: ${chg.relativePath})",
-                                    content = base64Content,
-                                    branch = branch,
-                                    sha = currentSha
+                            var attempt = 0
+                            var fileSuccess = false
+                            while (attempt < 2 && !fileSuccess) {
+                                attempt++
+                                val pushRes = githubApi.createOrUpdateFile(
+                                    "Bearer $currentToken",
+                                    project.repoOwner,
+                                    project.repoName,
+                                    chg.relativePath,
+                                    CreateOrUpdateFileRequest(
+                                        message = "${commit.commitMessage} (pushed: ${chg.relativePath})",
+                                        content = base64Content,
+                                        branch = branch,
+                                        sha = currentSha
+                                    )
                                 )
-                            )
-                            totalPushed++
+                                if (pushRes.isSuccessful) {
+                                    fileSuccess = true
+                                } else if (pushRes.code() == 409 || pushRes.code() == 422) {
+                                    if (attempt == 1) {
+                                        val fileRes = githubApi.getFileContent(
+                                            "Bearer $currentToken", project.repoOwner, project.repoName,
+                                            chg.relativePath, branch
+                                        )
+                                        if (fileRes.isSuccessful) {
+                                            currentSha = fileRes.body()?.sha
+                                        }
+                                    } else {
+                                        commitSuccess = false
+                                        throw IllegalStateException("API error ${pushRes.code()} on file ${chg.relativePath}")
+                                    }
+                                } else {
+                                    commitSuccess = false
+                                    throw java.lang.Exception("API error ${pushRes.code()} on file ${chg.relativePath}")
+                                }
+                            }
+                            if (fileSuccess) totalPushed++
+                        }
+                        
+                        if (commitSuccess) {
+                            projectDao.deleteLocalCommit(commit)
                         }
                     }
-
-                    // Clear pushed local commits
-                    projectDao.clearLocalCommitsForProject(project.id)
                 }
 
                 localCommits.value = emptyList()

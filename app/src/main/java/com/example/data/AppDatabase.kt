@@ -2,6 +2,7 @@ package com.example.data
 
 import androidx.room.Dao
 import androidx.room.Database
+import androidx.room.Delete
 import androidx.room.Entity
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -50,6 +51,9 @@ interface ProjectDao {
 
     @Query("DELETE FROM local_commits WHERE projectId = :projectId")
     suspend fun clearLocalCommitsForProject(projectId: Int)
+
+    @Delete
+    suspend fun deleteLocalCommit(commit: LocalCommit)
 }
 
 @Database(entities = [GitProject::class, LocalCommit::class], version = 3, exportSchema = false)

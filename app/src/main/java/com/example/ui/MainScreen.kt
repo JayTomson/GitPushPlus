@@ -37,6 +37,32 @@ fun MainScreen(
     val token by viewModel.token.collectAsStateWithLifecycle()
     val selectedProject by viewModel.selectedProject.collectAsStateWithLifecycle()
 
+    var projectToDelete by remember { mutableStateOf<GitProject?>(null) }
+
+    if (projectToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { projectToDelete = null },
+            title = { Text("Delete Project") },
+            text = { Text("Are you sure you want to delete '${projectToDelete?.name}' from your workspace? This will not delete the remote repository.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        projectToDelete?.let { viewModel.deleteProject(it.id) }
+                        projectToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { projectToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     val isConnected = !username.isNullOrBlank() && !token.isNullOrBlank()
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -162,7 +188,7 @@ fun MainScreen(
                                         project = project,
                                         isSelected = isProjectSelected,
                                         onClick = { viewModel.selectProject(project) },
-                                        onDelete = { viewModel.deleteProject(project.id) }
+                                        onDelete = { projectToDelete = project }
                                     )
                                 }
                             }
@@ -329,7 +355,7 @@ fun MainScreen(
                                         viewModel.selectProject(project)
                                         onProjectClick(project) 
                                     },
-                                    onDelete = { viewModel.deleteProject(project.id) }
+                                    onDelete = { projectToDelete = project }
                                 )
                             }
                         }

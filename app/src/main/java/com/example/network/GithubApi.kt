@@ -93,7 +93,15 @@ data class CreateOrUpdateFileRequest(
     @Json(name = "sha") val sha: String? = null
 )
 
+@JsonClass(generateAdapter = true)
+data class GithubUser(
+    @Json(name = "login") val login: String
+)
+
 interface GithubApiService {
+    @GET("user")
+    suspend fun getUserInfo(@Header("Authorization") token: String): Response<GithubUser>
+
     @GET("user/repos")
     suspend fun getMyRepos(
         @Header("Authorization") token: String,
@@ -155,7 +163,7 @@ interface GithubApiService {
         @Path("repo") repo: String,
         @Path("path") path: String,
         @Body request: CreateOrUpdateFileRequest
-    ): FileResponse
+    ): Response<FileResponse>
 
     @GET("repos/{owner}/{repo}/git/trees/{tree_sha}")
     suspend fun getGitTree(

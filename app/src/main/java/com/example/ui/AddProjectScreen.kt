@@ -332,19 +332,6 @@ fun AddProjectScreen(
                             }
                         }
 
-                        // Bottom Branch input (by default main)
-                        OutlinedTextField(
-                            value = branchName,
-                            onValueChange = { branchName = it },
-                            label = { Text("Default Branch") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("add_branch_input"),
-                            leadingIcon = { Icon(Icons.Default.CallSplit, contentDescription = null) },
-                            singleLine = true,
-                            colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
-                        )
-
                         Spacer(modifier = Modifier.weight(1f))
 
                         Button(
@@ -353,7 +340,6 @@ fun AddProjectScreen(
                                     appProjectName = projectName.ifBlank { newRepoName },
                                     repoName = newRepoName,
                                     isPrivate = isPrivate,
-                                    defaultBranch = branchName.ifBlank { "main" },
                                     localFolderPath = localFolderName.ifBlank { "Workspace/$newRepoName" }
                                 )
                                 onNavigateBack()
@@ -458,19 +444,6 @@ fun AddProjectScreen(
                         }
                     }
 
-                    // Branch name input (default is main) placed below the scroll list as requested
-                    OutlinedTextField(
-                        value = branchName,
-                        onValueChange = { branchName = it },
-                        label = { Text("Checkout Branch") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("add_branch_input"),
-                        leadingIcon = { Icon(Icons.Default.CallSplit, contentDescription = null) },
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent)
-                    )
-
                     Button(
                         onClick = {
                             val repo = selectedRepo
@@ -479,7 +452,7 @@ fun AddProjectScreen(
                                     appProjectName = projectName.ifBlank { repo.name },
                                     repoOwner = repo.fullName.split("/")[0],
                                     repoName = repo.name,
-                                    branch = branchName.ifBlank { repo.defaultBranch ?: "main" },
+                                    branch = repo.defaultBranch ?: "main",
                                     localFolderPath = localFolderName.ifBlank { "Workspace/${repo.name}" }
                                 )
                                 onNavigateBack()
