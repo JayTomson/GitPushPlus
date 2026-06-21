@@ -8,6 +8,7 @@ import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.PUT
+import retrofit2.http.HTTP
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -94,6 +95,13 @@ data class CreateOrUpdateFileRequest(
 )
 
 @JsonClass(generateAdapter = true)
+data class DeleteFileRequest(
+    @Json(name = "message") val message: String,
+    @Json(name = "sha") val sha: String,
+    @Json(name = "branch") val branch: String
+)
+
+@JsonClass(generateAdapter = true)
 data class GithubUser(
     @Json(name = "login") val login: String
 )
@@ -163,6 +171,15 @@ interface GithubApiService {
         @Path("repo") repo: String,
         @Path("path") path: String,
         @Body request: CreateOrUpdateFileRequest
+    ): Response<FileResponse>
+
+    @HTTP(method = "DELETE", path = "repos/{owner}/{repo}/contents/{path}", hasBody = true)
+    suspend fun deleteFile(
+        @Header("Authorization") token: String,
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("path") path: String,
+        @Body request: DeleteFileRequest
     ): Response<FileResponse>
 
     @GET("repos/{owner}/{repo}/git/trees/{tree_sha}")

@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
 
 class AppViewModel(
     private val projectDao: ProjectDao,
@@ -499,6 +500,7 @@ class AppViewModel(
 
         // Compute modified files using SHA comparison against virtual HEAD
         val modifiedList = mutableListOf<LocalModifiedFile>()
+        val collectedPaths = collectedFiles.map { it.relativePath }.toSet()
 
         for (file in collectedFiles) {
             val headEntry = virtualHead[file.relativePath]
@@ -516,6 +518,17 @@ class AppViewModel(
             } else if (headEntry.sha != localSha) {
                 // Differs from virtual HEAD -> modified
                 modifiedList.add(LocalModifiedFile(file.relativePath, file.file, isNew = false, remoteSha = headEntry.sha, uriString = file.uriString))
+            }
+        }
+
+        for ((path, state) in virtualHead) {
+            if (path !in collectedPaths) {
+                modifiedList.add(LocalModifiedFile(
+                    relativePath = path,
+                    isNew = false,
+                    remoteSha = state.sha,
+                    isDeleted = true
+                ))
             }
         }
 
@@ -625,6 +638,12 @@ class AppViewModel(
         } catch (e: Exception) {
             ""
         }
+    }
+
+    private fun readDocContentStrict(context: android.content.Context, uri: Uri): String {
+        return context.contentResolver.openInputStream(uri)?.use { stream ->
+            stream.bufferedReader(Charsets.UTF_8).readText()
+        } ?: throw Exception("Failed to read file via SAF. Stream is null: $uri")
     }
 
     private fun writeDocContent(context: android.content.Context, uri: Uri, text: String) {
@@ -823,20 +842,25 @@ class AppViewModel(
                 val updatedCommits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val changesList = mutableListOf<CommittedFileChange>()
                     for (mod in currentModified) {
-                        val content = if (mod.uriString != null) {
-                            readDocContent(context, Uri.parse(mod.uriString))
+                        val content = if (mod.isDeleted) {
+                            ""
+                        } else if (mod.uriString != null) {
+                            readDocContentStrict(context, Uri.parse(mod.uriString))
                         } else {
                             val lf = mod.localFile
                             if (lf != null && lf.exists()) {
                                 lf.readText(Charsets.UTF_8)
-                            } else ""
+                            } else {
+                                throw Exception("Local file not found or unreadable: ${mod.relativePath}")
+                            }
                         }
                         changesList.add(
                             CommittedFileChange(
                                 relativePath = mod.relativePath,
                                 content = content,
                                 isNew = mod.isNew,
-                                remoteSha = mod.remoteSha
+                                remoteSha = mod.remoteSha,
+                                isDeleted = mod.isDeleted
                             )
                         )
                     }
@@ -895,70 +919,106 @@ class AppViewModel(
                         throw IllegalStateException("No local commits to push")
                     }
 
+                    val failedCommits = mutableListOf<String>()
                     var totalPushed = 0
+                    
                     for (commit in commitsToPush) {
-                        val changes = Json.decodeFromString<List<CommittedFileChange>>(commit.changesJson)
-                        var commitSuccess = true
+                        val remainingChanges = Json.decodeFromString<MutableList<CommittedFileChange>>(commit.changesJson)
+                        var errorMessageForCommit: String? = null
                         
-                        for (chg in changes) {
-                            val base64Content = Base64.encodeToString(chg.content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                            
-                            var currentSha: String? = chg.remoteSha
-                            if (currentSha == null) {
-                                val fileInfoResponse = githubApi.getFileContent(
-                                    "Bearer $currentToken",
-                                    project.repoOwner,
-                                    project.repoName,
-                                    chg.relativePath,
-                                    branch
-                                )
-                                if (fileInfoResponse.isSuccessful) {
-                                    currentSha = fileInfoResponse.body()?.sha
-                                }
-                            }
-
-                            var attempt = 0
-                            var fileSuccess = false
-                            while (attempt < 2 && !fileSuccess) {
-                                attempt++
-                                val pushRes = githubApi.createOrUpdateFile(
-                                    "Bearer $currentToken",
-                                    project.repoOwner,
-                                    project.repoName,
-                                    chg.relativePath,
-                                    CreateOrUpdateFileRequest(
-                                        message = "${commit.commitMessage} (pushed: ${chg.relativePath})",
-                                        content = base64Content,
-                                        branch = branch,
-                                        sha = currentSha
+                        try {
+                            val iterator = remainingChanges.iterator()
+                            while (iterator.hasNext()) {
+                                val chg = iterator.next()
+                                val base64Content = Base64.encodeToString(chg.content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                                
+                                var currentSha: String? = chg.remoteSha
+                                if (currentSha == null && !chg.isNew) {
+                                    val fileInfoResponse = githubApi.getFileContent(
+                                        "Bearer $currentToken",
+                                        project.repoOwner, project.repoName,
+                                        chg.relativePath, branch
                                     )
-                                )
-                                if (pushRes.isSuccessful) {
-                                    fileSuccess = true
-                                } else if (pushRes.code() == 409 || pushRes.code() == 422) {
-                                    if (attempt == 1) {
-                                        val fileRes = githubApi.getFileContent(
-                                            "Bearer $currentToken", project.repoOwner, project.repoName,
-                                            chg.relativePath, branch
+                                    if (fileInfoResponse.isSuccessful) currentSha = fileInfoResponse.body()?.sha
+                                }
+
+                                var attempt = 0
+                                var fileSuccess = false
+                                while (attempt < 2 && !fileSuccess) {
+                                    attempt++
+                                    
+                                    if (chg.isDeleted) {
+                                        if (currentSha == null) {
+                                            fileSuccess = true
+                                            break
+                                        }
+                                        val pushRes = githubApi.deleteFile(
+                                            "Bearer $currentToken", project.repoOwner, project.repoName, chg.relativePath,
+                                            DeleteFileRequest(
+                                                message = "${commit.commitMessage} (deleted: ${chg.relativePath})",
+                                                branch = branch, sha = currentSha
+                                            )
                                         )
-                                        if (fileRes.isSuccessful) {
-                                            currentSha = fileRes.body()?.sha
+                                        if (pushRes.isSuccessful || pushRes.code() == 404) {
+                                            fileSuccess = true
+                                        } else if (pushRes.code() == 409 || pushRes.code() == 422) {
+                                            if (attempt == 1) {
+                                                val fileRes = githubApi.getFileContent("Bearer $currentToken", project.repoOwner, project.repoName, chg.relativePath, branch)
+                                                if (fileRes.isSuccessful) {
+                                                    currentSha = fileRes.body()?.sha
+                                                } else {
+                                                    fileSuccess = true // Already gone
+                                                    break
+                                                }
+                                            } else {
+                                                throw Exception("Delete error ${pushRes.code()} on file ${chg.relativePath}")
+                                            }
+                                        } else {
+                                            throw Exception("Delete error ${pushRes.code()} on file ${chg.relativePath}")
                                         }
                                     } else {
-                                        commitSuccess = false
-                                        throw IllegalStateException("API error ${pushRes.code()} on file ${chg.relativePath}")
+                                        val pushRes = githubApi.createOrUpdateFile(
+                                            "Bearer $currentToken", project.repoOwner, project.repoName, chg.relativePath,
+                                            CreateOrUpdateFileRequest(
+                                                message = "${commit.commitMessage} (pushed: ${chg.relativePath})",
+                                                content = base64Content, branch = branch, sha = currentSha
+                                            )
+                                        )
+                                        if (pushRes.isSuccessful) {
+                                            fileSuccess = true
+                                        } else if (pushRes.code() == 409 || pushRes.code() == 422) {
+                                            if (attempt == 1) {
+                                                val fileRes = githubApi.getFileContent("Bearer $currentToken", project.repoOwner, project.repoName, chg.relativePath, branch)
+                                                if (fileRes.isSuccessful) {
+                                                    currentSha = fileRes.body()?.sha
+                                                }
+                                            } else {
+                                                throw Exception("API error ${pushRes.code()} on file ${chg.relativePath}")
+                                            }
+                                        } else {
+                                            throw Exception("API error ${pushRes.code()} on file ${chg.relativePath}")
+                                        }
                                     }
-                                } else {
-                                    commitSuccess = false
-                                    throw java.lang.Exception("API error ${pushRes.code()} on file ${chg.relativePath}")
+                                }
+                                if (fileSuccess) {
+                                    totalPushed++
+                                    iterator.remove()
                                 }
                             }
-                            if (fileSuccess) totalPushed++
+                        } catch (e: Exception) {
+                            errorMessageForCommit = e.message ?: e.toString()
                         }
                         
-                        if (commitSuccess) {
+                        if (remainingChanges.isEmpty()) {
                             projectDao.deleteLocalCommit(commit)
+                        } else {
+                            projectDao.insertLocalCommit(commit.copy(changesJson = Json.encodeToString<List<CommittedFileChange>>(remainingChanges.toList())))
+                            failedCommits.add("'${commit.commitMessage}' -> ${errorMessageForCommit ?: "Unknown error"}")
                         }
+                    }
+
+                    if (failedCommits.isNotEmpty()) {
+                        throw Exception("Some commits failed to push:\n" + failedCommits.joinToString("\n"))
                     }
                 }
 
@@ -993,7 +1053,8 @@ data class CommittedFileChange(
     val relativePath: String,
     val content: String,
     val isNew: Boolean,
-    val remoteSha: String?
+    val remoteSha: String?,
+    val isDeleted: Boolean = false
 )
 
 data class VirtualFileState(
@@ -1015,5 +1076,6 @@ data class LocalModifiedFile(
     val localFile: java.io.File? = null,
     val isNew: Boolean,
     val remoteSha: String? = null,
-    val uriString: String? = null
+    val uriString: String? = null,
+    val isDeleted: Boolean = false
 )

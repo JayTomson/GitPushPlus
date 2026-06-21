@@ -543,7 +543,7 @@ fun ProjectDetailScreen(
                                             if (isLoadingWorkspace && localFiles.isEmpty()) {
                                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                             } else {
-                                                Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Icon(Icons.Default.AddCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
                                             }
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Text(if (unstagedCount > 0) "Add ($unstagedCount)" else "git add .")
